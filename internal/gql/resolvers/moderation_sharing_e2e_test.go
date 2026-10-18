@@ -85,6 +85,7 @@ func TestModerationQuarantineAllowBanExportImportAcrossInstances(t *testing.T) {
 	sourceImporter, targetImporter := factory(sourceDB), factory(targetDB)
 	ingest := func(imp *importer.ExchangeImporter, server *httptest.Server, token, name string, hashes ...protocol.ID) {
 		file := `{"format":{"name":"torrent-exchange","version":{"major":1,"minor":0}}}` + "\n"
+
 		for _, hash := range hashes {
 			record, err := json.Marshal(map[string]any{
 				"infoHash": hash.String(),

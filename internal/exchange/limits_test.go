@@ -140,8 +140,10 @@ func TestLimitedReaderClipsReportedStrings(t *testing.T) {
 	require.Len(t, malformed, 1)
 	assert.LessOrEqual(t, len(malformed[0].Err.Error()), 9+len("…"))
 
-	paths, values := []string{}, []string{}
-	for _, entry := range reader.Report() {
+	entries := reader.Report()
+	paths, values := make([]string, 0, len(entries)), make([]string, 0, len(entries))
+
+	for _, entry := range entries {
 		paths = append(paths, entry.Path)
 		values = append(values, entry.Value)
 	}

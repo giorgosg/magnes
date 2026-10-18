@@ -31,7 +31,11 @@ func newDBEngine(t *testing.T, db *dbtest.DB) *gin.Engine {
 
 	result := httpserver.New(httpserver.Params{
 		Importer: lazy.New(func() (*importer.ExchangeImporter, error) {
-			return importer.NewExchangeImporter(db.Gorm, nil, importer.ExchangeConfig{FilesThreshold: 100}), nil
+			return importer.NewExchangeImporter(
+				db.Gorm,
+				nil,
+				importer.ExchangeConfig{FilesThreshold: 100},
+			), nil
 		}),
 		Guard:  allowGuard{},
 		Logger: zap.NewNop().Sugar(),
@@ -76,7 +80,8 @@ func TestImportRejectsTheLegacyFlatFormat(t *testing.T) {
 	engine := newDBEngine(t, db)
 
 	rec := post(t, engine, "/import?origin=alice", "application/json", strings.NewReader(
-		`{"source":"legacy","infoHash":"0000000000000000000000000000000000000001","name":"Legacy","size":1}`+"\n"))
+		`{"source":"legacy","infoHash":"0000000000000000000000000000000000000001","name":"Legacy","size":1}`+"\n",
+	))
 
 	assert.Equal(t, http.StatusUnprocessableEntity, rec.Code)
 	assert.Contains(t, rec.Body.String(), "record before the first header")
@@ -102,61 +107,75 @@ func TestImportRefusesAMissingOrInvalidOriginBeforeReading(t *testing.T) {
 		"/import?origin=alice&overwrite-hints=true",
 	} {
 		t.Run(target, func(t *testing.T) {
+			t.Parallel()
+
 			rec := post(t, engine, target, "application/x-ndjson", unreadBody{t})
 
 			assert.Equal(t, http.StatusBadRequest, rec.Code)
 
-			var body struct {
-				Error string `json:"error"`
-			}
+			var body importReport
 			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body), rec.Body.String())
 			assert.NotEmpty(t, body.Error)
+			assert.Zero(t, count(t, db, `SELECT count(*) FROM torrents`))
 		})
 	}
-
-	assert.Zero(t, count(t, db, `SELECT count(*) FROM torrents`))
 }
 
-// importReport is the JSON report POST /import answers with.
+// importReport is the JSON report POST /import answers with, decoded independently of the
+// handler's own types so that a renamed field fails here.
 type importReport struct {
-	Error   string `json:"error"`
-	Headers []struct {
-		Line    int `json:"line"`
-		Version struct {
-			Major int `json:"major"`
-			Minor int `json:"minor"`
-		} `json:"version"`
-		Producer struct {
-			Program string `json:"program"`
-			Version string `json:"version"`
-		} `json:"producer"`
-		ExportedAt string `json:"exportedAt"`
-		Since      string `json:"since"`
-	} `json:"headers"`
-	Records   int `json:"records"`
-	Malformed []struct {
-		Line  int    `json:"line"`
-		Error string `json:"error"`
-	} `json:"malformed"`
-	Torrents struct {
-		New       int `json:"new"`
-		Updated   int `json:"updated"`
-		Unchanged int `json:"unchanged"`
-		Banned    int `json:"banned"`
-		Skipped   int `json:"skipped"`
-	} `json:"torrents"`
-	Hints struct {
-		Written int `json:"written"`
-		Kept    int `json:"kept"`
-	} `json:"hints"`
-	TagsAdded int `json:"tagsAdded"`
-	Dropped   []struct {
-		Scope  string `json:"scope"`
-		Reason string `json:"reason"`
-		Path   string `json:"path"`
-		Value  string `json:"value"`
-		Count  int    `json:"count"`
-	} `json:"dropped"`
+	Error     string            `json:"error"`
+	Headers   []reportHeader    `json:"headers"`
+	Records   int               `json:"records"`
+	Malformed []reportMalformed `json:"malformed"`
+	Torrents  reportTorrents    `json:"torrents"`
+	Hints     reportHints       `json:"hints"`
+	TagsAdded int               `json:"tagsAdded"`
+	Dropped   []reportDropped   `json:"dropped"`
+}
+
+type reportHeader struct {
+	Line       int            `json:"line"`
+	Version    reportVersion  `json:"version"`
+	Producer   reportProducer `json:"producer"`
+	ExportedAt string         `json:"exportedAt"`
+	Since      string         `json:"since"`
+}
+
+type reportVersion struct {
+	Major int `json:"major"`
+	Minor int `json:"minor"`
+}
+
+type reportProducer struct {
+	Program string `json:"program"`
+	Version string `json:"version"`
+}
+
+type reportMalformed struct {
+	Line  int    `json:"line"`
+	Error string `json:"error"`
+}
+
+type reportTorrents struct {
+	New       int `json:"new"`
+	Updated   int `json:"updated"`
+	Unchanged int `json:"unchanged"`
+	Banned    int `json:"banned"`
+	Skipped   int `json:"skipped"`
+}
+
+type reportHints struct {
+	Written int `json:"written"`
+	Kept    int `json:"kept"`
+}
+
+type reportDropped struct {
+	Scope  string `json:"scope"`
+	Reason string `json:"reason"`
+	Path   string `json:"path"`
+	Value  string `json:"value"`
+	Count  int    `json:"count"`
 }
 
 func decodeReport(t *testing.T, rec *httptest.ResponseRecorder) importReport {
@@ -254,7 +273,10 @@ func TestImportOverwritesHintsOnlyWhenAsked(t *testing.T) {
 	}
 	hint := func() string {
 		var contentType string
-		require.NoError(t, db.Pool.QueryRow(t.Context(), `SELECT content_type FROM torrent_hints`).Scan(&contentType))
+		require.NoError(
+			t,
+			db.Pool.QueryRow(t.Context(), `SELECT content_type FROM torrent_hints`).Scan(&contentType),
+		)
 
 		return contentType
 	}

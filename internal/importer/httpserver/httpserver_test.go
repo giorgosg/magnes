@@ -72,7 +72,12 @@ func TestImportRejectsMediaTypesOtherThanNDJSON(t *testing.T) {
 		t.Run("content-type "+contentType, func(t *testing.T) {
 			t.Parallel()
 
-			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/import?origin=alice", unreadBody{t})
+			req := httptest.NewRequestWithContext(
+				t.Context(),
+				http.MethodPost,
+				"/import?origin=alice",
+				unreadBody{t},
+			)
 			if contentType != "" {
 				req.Header.Set("Content-Type", contentType)
 			}

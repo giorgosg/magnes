@@ -80,7 +80,8 @@ func TestImportClipsReportedStrings(t *testing.T) {
 	long := strings.Repeat("u", httpserver.MaxReportedBytes+1)
 
 	rec := post(t, newDBEngine(t, db), "/import?origin=alice", "application/x-ndjson", strings.NewReader(
-		exchangeHeader+"\n"+`{"infoHash":"0000000000000000000000000000000000000001","name":"x","`+long+`":1}`+"\n"))
+		exchangeHeader+"\n"+`{"infoHash":"0000000000000000000000000000000000000001","name":"x","`+long+`":1}`+"\n",
+	))
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 
 	report := decodeReport(t, rec)

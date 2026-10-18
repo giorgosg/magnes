@@ -53,7 +53,11 @@ func importByCLI(t *testing.T, db *dbtest.DB) {
 	lifecycle := fxtest.NewLifecycle(t)
 	command := exchangecmd.NewImport(exchangecmd.ImportParams{
 		Importer: lazy.New(func() (*importer.ExchangeImporter, error) {
-			return importer.NewExchangeImporter(db.Gorm, nil, importer.ExchangeConfig{FilesThreshold: 100}), nil
+			return importer.NewExchangeImporter(
+				db.Gorm,
+				nil,
+				importer.ExchangeConfig{FilesThreshold: 100},
+			), nil
 		}),
 		Lifecycle: lifecycle,
 	}).Command

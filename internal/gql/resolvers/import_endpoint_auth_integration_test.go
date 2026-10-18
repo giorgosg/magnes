@@ -34,7 +34,11 @@ func TestImportEndpointRefusesAnonymousUnderTheReadOnlyBaseline(t *testing.T) {
 
 	require.NoError(t, importhttpserver.New(importhttpserver.Params{
 		Importer: lazy.New(func() (*importer.ExchangeImporter, error) {
-			return importer.NewExchangeImporter(db.Gorm, nil, importer.ExchangeConfig{FilesThreshold: 100}), nil
+			return importer.NewExchangeImporter(
+				db.Gorm,
+				nil,
+				importer.ExchangeConfig{FilesThreshold: 100},
+			), nil
 		}),
 		Guard:  stack.Guard,
 		Logger: zap.NewNop().Sugar(),

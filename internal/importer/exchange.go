@@ -182,7 +182,9 @@ func (i *ExchangeImporter) Import(
 
 			report.add(written)
 
-			if err := ownDrop.checkLimit(len(report.Headers) + len(report.Malformed) + len(dropped)); err != nil {
+			if err := ownDrop.checkLimit(
+				len(report.Headers) + len(report.Malformed) + len(dropped),
+			); err != nil {
 				return finish(err)
 			}
 		}
