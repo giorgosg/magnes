@@ -179,6 +179,7 @@ func (r exchangeReader) readTorrents(
 	if err != nil {
 		return nil, nil, fmt.Errorf("read torrents: %w", err)
 	}
+
 	defer rows.Close()
 
 	for rows.Next() {
