@@ -17,13 +17,19 @@ type importResult struct {
 	err    error
 }
 
-// startImport runs an import of src in the background, one record per batch.
-func startImport(ctx context.Context, db *dbtest.DB, src io.Reader) <-chan importResult {
+// startImport runs an import of src in the background, one record per batch unless a
+// batch size is given.
+func startImport(ctx context.Context, db *dbtest.DB, src io.Reader, batchSize ...int) <-chan importResult {
 	done := make(chan importResult, 1)
+	size := 1
+
+	if len(batchSize) > 0 {
+		size = batchSize[0]
+	}
 
 	go func() {
 		report, err := importer.NewExchangeImporter(db.Gorm, nil, importer.ExchangeConfig{
-			FilesThreshold: 100, BatchSize: 1,
+			FilesThreshold: 100, BatchSize: size,
 		}).Import(ctx, src, alice())
 		done <- importResult{report, err}
 	}()

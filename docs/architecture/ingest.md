@@ -140,12 +140,19 @@ The other writer to the catalogue is the exchange-file import, `ExchangeImporter
   - Name, size and private are written only by the insert of a new torrent.
 - **The batch's torrents are locked first, in infohash order,** as the crawler's source
   write does. The first statement inserts the new torrents, `ON CONFLICT DO NOTHING`.
-  The second takes `FOR KEY SHARE` on all of them, so a delete in flight is waited for
-  and its torrent skipped, and no foreign key fails later in the batch.
+  The second takes `FOR KEY SHARE` on all of them, so no foreign key fails later in the
+  batch. A delete that began before the insert makes the insert wait, and the record is
+  then written as a new torrent. A delete that commits between the two statements leaves
+  the torrent out of the lock: it is skipped and counted.
   - It must not take a stronger lock. The source write fires `enhancement_source_rank`,
     which takes `FOR UPDATE`. An import that already held `NO KEY UPDATE` would deadlock
     with the enhancement scheduler's claim: the claim holds `KEY SHARE`, then waits to
     update the torrent.
+- **A batch aborted with `40P01` or `40001` is retried,** up to three attempts. Writers
+  that take no moderation lock, such as the classifier's deletes and the enhancement
+  scheduler's maintenance, lock torrents in their own order, so a deadlock with them is
+  still possible. An aborted batch wrote nothing, and the merge rules make a rewrite
+  idempotent.
 - **Cancellation** cancels the batch's queries. pgx closes the connection, the backend
   rolls back, and the import returns at once. Reading runs on its own goroutine, so an
   import stalled on its input still stops.

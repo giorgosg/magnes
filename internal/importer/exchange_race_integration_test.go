@@ -308,3 +308,39 @@ VALUES ('alice:dht','alice:dht',now(),now())`)
 
 	require.Equal(t, map[string]sourceRow{"alice:dht": {Seeders: ptr(7)}}, sourceRows(t, db, hash))
 }
+
+// A delete that commits after the batch's insert but before its lock removes a torrent
+// the batch meant to update. The batch skips and counts it rather than failing a foreign
+// key and rolling back the rest. The lock is taken in infohash order, so holding the
+// first torrent keeps the import between the two statements while the second is deleted.
+func TestExchangeImportSkipsATorrentDeletedBeforeItIsLocked(t *testing.T) {
+	t.Parallel()
+
+	db := dbtest.New(t)
+	held, deleted := protocol.ID{1}, protocol.ID{2}
+	seedTorrent(t, db, held, "Held", 10, false, "no_info")
+	seedTorrent(t, db, deleted, "Deleted", 10, false, "no_info")
+
+	holder := holdRow(t, db, `SELECT 1 FROM torrents WHERE info_hash = $1 FOR UPDATE`, held[:])
+
+	done := startImport(t.Context(), db, exchangeFile(
+		`{"infoHash":"`+hashHex(1)+`","name":"x","sources":[{"source":"dht","seeders":1}]}`,
+		`{"infoHash":"`+hashHex(2)+`","name":"x","sources":[{"source":"dht","seeders":2}]}`,
+	), 100)
+
+	waitForLockWaits(t, db, 1, "the import should wait to lock the held torrent")
+	exec(t, db, `DELETE FROM torrents WHERE info_hash = $1`, deleted[:])
+	require.NoError(t, holder.Commit(t.Context()))
+
+	select {
+	case result := <-done:
+		require.NoError(t, result.err)
+		require.Equal(t, 1, result.report.Updated)
+		require.Equal(t, 1, result.report.Skipped)
+	case <-time.After(5 * time.Second):
+		t.Fatal("the import did not finish")
+	}
+
+	require.Zero(t, count(t, db, `SELECT count(*) FROM torrents WHERE info_hash = $1`, deleted[:]))
+	require.Equal(t, map[string]sourceRow{"alice:dht": {Seeders: ptr(1)}}, sourceRows(t, db, held))
+}

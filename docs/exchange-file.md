@@ -320,12 +320,15 @@ once the export has succeeded, so a failed export leaves any previous file intac
   - Each of these is reported.
 - **Tags** that are not valid local tag names are dropped and reported. A valid name is
   lowercase kebab-case, at most 30 characters.
-- **Values too large to store** skip the record, which is reported: a size above
-  2⁶³−1, or a file index or peer count above 2³¹−1.
+- **Skipped records** are counted. A record is skipped when:
+  - a value is too large to store, which is also reported: a size above 2⁶³−1, or a file
+    index or peer count above 2³¹−1;
+  - its torrent is deleted locally while the record's batch is being written.
 - **Classification:** new and changed torrents are queued for classification.
 - **Batches:** the import commits every 100 records, each batch in one transaction under
   the same moderation locks the crawler takes. Every merge rule is a condition of the SQL
-  write itself, so it holds against whatever another writer committed first.
+  write itself, so it holds against whatever another writer committed first. A batch
+  that PostgreSQL aborts to break a deadlock is written again, up to three attempts.
 - **Interruption:** Ctrl-C or SIGTERM stops the import mid-file. The batch in flight is
   rolled back, committed batches stay, and the report is printed. Importing a file again
   changes nothing that the first import wrote, so an interrupted import is resumed by
