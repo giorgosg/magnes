@@ -33,13 +33,13 @@ func TestImportRefusesALineLongerThanTheLimit(t *testing.T) {
 	engine := newDBEngine(t, db)
 
 	rec := post(t, engine, "/import?origin=alice", "application/x-ndjson", strings.NewReader(
-		exchangeHeader+"\n"+recordOfLength(t, httpserver.MaxLineBytes)+"\n"))
+		exchangeHeader+"\n"+recordOfLength(t, httpserver.Limits.MaxLineBytes)+"\n"))
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 
 	rec = post(t, engine, "/import?origin=bob", "application/x-ndjson", strings.NewReader(
 		exchangeHeader+"\n"+
 			`{"infoHash":"0000000000000000000000000000000000000002","name":"before"}`+"\n"+
-			recordOfLength(t, httpserver.MaxLineBytes+1)+"\n"+
+			recordOfLength(t, httpserver.Limits.MaxLineBytes+1)+"\n"+
 			`{"infoHash":"0000000000000000000000000000000000000003","name":"after"}`+"\n"))
 	require.Equal(t, http.StatusRequestEntityTooLarge, rec.Code)
 
@@ -57,7 +57,7 @@ func TestImportRefusesMoreDistinctReportedEntriesThanTheLimit(t *testing.T) {
 	db := dbtest.New(t)
 
 	var fields strings.Builder
-	for i := range httpserver.MaxReported {
+	for i := range httpserver.Limits.MaxReported {
 		fmt.Fprintf(&fields, `,"unknown-%d":1`, i)
 	}
 
@@ -68,7 +68,11 @@ func TestImportRefusesMoreDistinctReportedEntriesThanTheLimit(t *testing.T) {
 
 	report := decodeReport(t, rec)
 	assert.Contains(t, report.Error, "line 2: too much to report")
-	assert.LessOrEqual(t, len(report.Headers)+len(report.Malformed)+len(report.Dropped), httpserver.MaxReported)
+	assert.LessOrEqual(
+		t,
+		len(report.Headers)+len(report.Malformed)+len(report.Dropped),
+		httpserver.Limits.MaxReported,
+	)
 	assert.Zero(t, count(t, db, `SELECT count(*) FROM torrents`))
 }
 
@@ -77,7 +81,7 @@ func TestImportClipsReportedStrings(t *testing.T) {
 	t.Parallel()
 
 	db := dbtest.New(t)
-	long := strings.Repeat("u", httpserver.MaxReportedBytes+1)
+	long := strings.Repeat("u", httpserver.Limits.MaxReportedBytes+1)
 
 	rec := post(t, newDBEngine(t, db), "/import?origin=alice", "application/x-ndjson", strings.NewReader(
 		exchangeHeader+"\n"+`{"infoHash":"0000000000000000000000000000000000000001","name":"x","`+long+`":1}`+"\n",
@@ -86,5 +90,43 @@ func TestImportClipsReportedStrings(t *testing.T) {
 
 	report := decodeReport(t, rec)
 	require.Len(t, report.Dropped, 1)
-	assert.Equal(t, long[:httpserver.MaxReportedBytes]+"…", report.Dropped[0].Path)
+	assert.Equal(t, long[:httpserver.Limits.MaxReportedBytes]+"…", report.Dropped[0].Path)
+}
+
+// Invalid tags are reported by the import rather than the reader, and one record can carry
+// as many as its line holds. They count against the same limit.
+func TestImportRefusesMoreDistinctInvalidTagsThanTheLimit(t *testing.T) {
+	t.Parallel()
+
+	db := dbtest.New(t)
+
+	tags := make([]string, httpserver.Limits.MaxReported)
+	for i := range tags {
+		tags[i] = fmt.Sprintf(`"Bad %d"`, i)
+	}
+
+	rec := post(t, newDBEngine(t, db), "/import?origin=alice", "application/x-ndjson", strings.NewReader(
+		exchangeHeader+"\n"+`{"infoHash":"0000000000000000000000000000000000000001","name":"x",`+
+			`"magnes":{"tags":[`+strings.Join(tags, ",")+`]}}`+"\n"))
+	require.Equal(t, http.StatusRequestEntityTooLarge, rec.Code)
+
+	report := decodeReport(t, rec)
+	assert.Contains(t, report.Error, "too much to report")
+	assert.LessOrEqual(t,
+		len(report.Headers)+len(report.Malformed)+len(report.Dropped), httpserver.Limits.MaxReported)
+	assert.Zero(t, count(t, db, `SELECT count(*) FROM torrents`))
+}
+
+// A format error quotes what the sender wrote. Its text is clipped like the report's.
+func TestImportClipsTheError(t *testing.T) {
+	t.Parallel()
+
+	name := strings.Repeat("n", 10_000)
+	rec := post(t, newDBEngine(t, dbtest.New(t)), "/import?origin=alice", "application/x-ndjson",
+		strings.NewReader(`{"format":{"name":"`+name+`","version":{"major":1,"minor":0}}}`+"\n"))
+	require.Equal(t, http.StatusUnprocessableEntity, rec.Code)
+
+	report := decodeReport(t, rec)
+	assert.Contains(t, report.Error, "unsupported format name")
+	assert.LessOrEqual(t, len(report.Error), httpserver.Limits.MaxReportedBytes+len("…"))
 }

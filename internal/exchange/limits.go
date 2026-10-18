@@ -34,6 +34,13 @@ type Limits struct {
 	MaxReportedBytes int
 }
 
+// TooMuchReported is the error that stops a stream at MaxReported, for a caller that adds
+// entries of its own to the report.
+func (l Limits) TooMuchReported() error {
+	return fmt.Errorf("%w: more than %d headers, malformed lines and distinct dropped entries",
+		ErrTooMuchReported, l.MaxReported)
+}
+
 // Clip clips s as the report clips what it keeps, for a caller that adds to the report.
 func (l Limits) Clip(s string) string {
 	return clip(s, l.MaxReportedBytes)
@@ -85,10 +92,7 @@ func (r *Reader) admit(n *notes, listing int) error {
 	if r.limits.MaxReported > 0 {
 		added := listing + len(r.report.unseen(clipped))
 		if r.listed+len(r.report)+added > r.limits.MaxReported {
-			r.fatal = &FatalError{Line: r.line, Err: fmt.Errorf(
-				"%w: more than %d headers, malformed lines and distinct dropped entries",
-				ErrTooMuchReported, r.limits.MaxReported,
-			)}
+			r.fatal = &FatalError{Line: r.line, Err: r.limits.TooMuchReported()}
 
 			return r.fatal
 		}

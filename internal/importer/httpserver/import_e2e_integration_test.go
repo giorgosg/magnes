@@ -70,7 +70,7 @@ func importByCLI(t *testing.T, db *dbtest.DB) {
 	require.NoError(t, app.Run([]string{"bitmagnet", "import", "--origin", "alice", fixturePath}), out.String())
 }
 
-// An HTTP import of the ticket 01 fixture writes exactly the rows the CLI import does,
+// An HTTP import of the frozen fixture writes exactly the rows the CLI import does,
 // because both run the one import code path.
 func TestImportOverHTTPWritesWhatTheCLIImportWrites(t *testing.T) {
 	t.Parallel()

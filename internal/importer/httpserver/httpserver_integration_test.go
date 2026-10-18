@@ -2,6 +2,7 @@ package httpserver_test
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -19,7 +20,7 @@ import (
 	"go.uber.org/zap"
 )
 
-// fixturePath is the frozen exchange fixture from ticket 01.
+// fixturePath is the frozen version 1 exchange fixture.
 const fixturePath = "../../exchange/testdata/exchange-v1.jsonl"
 
 const exchangeHeader = `{"format":{"name":"torrent-exchange","version":{"major":1,"minor":0}}}`
@@ -294,4 +295,68 @@ func TestImportOverwritesHintsOnlyWhenAsked(t *testing.T) {
 		record("music")))
 	assert.Equal(t, 1, written.Hints.Written)
 	require.Equal(t, "music", hint())
+}
+
+// A header this reader cannot interpret stops the import with 422.
+func TestImportRefusesAnUnsupportedFormatWith422(t *testing.T) {
+	t.Parallel()
+
+	engine := newDBEngine(t, dbtest.New(t))
+
+	for _, header := range []string{
+		`{"format":{"name":"torrent-exchange","version":{"major":2,"minor":0}}}`,
+		`{"format":{"name":"something-else","version":{"major":1,"minor":0}}}`,
+		`{"format":"torrent-exchange"}`,
+	} {
+		rec := post(t, engine, "/import?origin=alice", "application/x-ndjson", strings.NewReader(header+"\n"))
+		assert.Equal(t, http.StatusUnprocessableEntity, rec.Code, header)
+		assert.NotEmpty(t, decodeReport(t, rec).Error, header)
+	}
+}
+
+// brokenBody yields a valid file up to a point, then fails, as a request body does when
+// its client goes wrong mid-stream.
+type brokenBody struct{ data io.Reader }
+
+func (b *brokenBody) Read(p []byte) (int, error) {
+	n, err := b.data.Read(p)
+	if errors.Is(err, io.EOF) {
+		return n, errors.New("connection reset")
+	}
+
+	return n, err
+}
+
+// A body that cannot be read answers 400, with the report of what was committed.
+func TestImportAnswers400WhenTheBodyCannotBeRead(t *testing.T) {
+	t.Parallel()
+
+	db := dbtest.New(t)
+	rec := post(t, newDBEngine(t, db), "/import?origin=alice", "application/x-ndjson", &brokenBody{
+		data: strings.NewReader(exchangeHeader + "\n" +
+			`{"infoHash":"0000000000000000000000000000000000000001","name":"x"}` + "\n"),
+	})
+	require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+
+	report := decodeReport(t, rec)
+	assert.Contains(t, report.Error, "connection reset")
+	assert.Equal(t, 1, report.Torrents.New)
+}
+
+// A database failure answers 500. The cause goes to the log, not to the caller.
+func TestImportAnswers500WithoutTheDatabaseError(t *testing.T) {
+	t.Parallel()
+
+	db := dbtest.New(t)
+	_, err := db.Pool.Exec(t.Context(), `DROP TABLE torrents_torrent_sources`)
+	require.NoError(t, err)
+
+	rec := post(t, newDBEngine(t, db), "/import?origin=alice", "application/x-ndjson", strings.NewReader(
+		exchangeHeader+"\n"+
+			`{"infoHash":"0000000000000000000000000000000000000001","name":"x","sources":[{"source":"dht"}]}`+"\n"))
+	require.Equal(t, http.StatusInternalServerError, rec.Code, rec.Body.String())
+
+	report := decodeReport(t, rec)
+	assert.Equal(t, "import failed; the batches counted here were committed and the rest were not", report.Error)
+	assert.NotContains(t, rec.Body.String(), "torrents_torrent_sources")
 }

@@ -149,6 +149,8 @@ func (i *ExchangeImporter) Import(
 
 	finish := func(err error) (ExchangeReport, error) {
 		report.Dropped = mergeDrops(dropped, ownDrop)
+		report.trim(options.Limits.MaxReported)
+
 		return report, err
 	}
 
@@ -170,6 +172,13 @@ func (i *ExchangeImporter) Import(
 		report.Records += len(batch.records)
 		dropped = batch.dropped
 
+		// The reader keeps its own entries within the limit, but not alongside the
+		// import's, which this counts them against.
+		ownDrop.reported = len(report.Headers) + len(report.Malformed) + len(dropped)
+		if err := ownDrop.check(); err != nil {
+			return finish(err)
+		}
+
 		if len(batch.records) > 0 {
 			written, err := i.writeBatch(ctx, batch.records, options, ownDrop)
 			if err != nil {
@@ -181,12 +190,6 @@ func (i *ExchangeImporter) Import(
 			}
 
 			report.add(written)
-
-			if err := ownDrop.checkLimit(
-				len(report.Headers) + len(report.Malformed) + len(dropped),
-			); err != nil {
-				return finish(err)
-			}
 		}
 
 		if batch.last {
@@ -286,29 +289,64 @@ type dropKey struct {
 type drops struct {
 	counts map[dropKey]int
 	limits exchange.Limits
+	// reported is how many entries the rest of the report holds. The import's own drops
+	// get what is left of the limit.
+	reported int
+	// full is set once a drop found no room, which stops the import.
+	full bool
 }
 
-func newDrops(limits exchange.Limits) drops {
-	return drops{counts: make(map[dropKey]int), limits: limits}
+func newDrops(limits exchange.Limits) *drops {
+	return &drops{counts: make(map[dropKey]int), limits: limits}
 }
 
-func (d drops) add(reason exchange.Reason, path, value string) {
-	d.counts[dropKey{reason: reason, path: path, value: d.limits.Clip(value)}]++
+// add counts a drop. A new entry with no room left under the limit is not kept, so a
+// record cannot make the import hold more than the limit while its batch is planned.
+func (d *drops) add(reason exchange.Reason, path, value string) {
+	key := dropKey{reason: reason, path: path, value: d.limits.Clip(value)}
+	if _, seen := d.counts[key]; !seen && d.over(1) {
+		d.full = true
+		return
+	}
+
+	d.counts[key]++
 }
 
-// checkLimit stops an import whose report, with the reader's reported entries, would hold
-// more than the limit allows. The reader enforces the limit on its own entries.
-func (d drops) checkLimit(reported int) error {
-	if d.limits.MaxReported > 0 && reported+len(d.counts) > d.limits.MaxReported {
-		return fmt.Errorf("%w: more than %d headers, malformed lines and distinct dropped entries",
-			exchange.ErrTooMuchReported, d.limits.MaxReported)
+func (d *drops) over(extra int) bool {
+	return d.limits.MaxReported > 0 && d.reported+len(d.counts)+extra > d.limits.MaxReported
+}
+
+// check stops an import whose report would hold more than the limit allows.
+func (d *drops) check() error {
+	if d.full || d.over(0) {
+		return d.limits.TooMuchReported()
 	}
 
 	return nil
 }
 
+// trim keeps a report that stopped at the limit within it. The reader and the import each
+// keep within the limit, so together they can pass it by up to one batch before the
+// import stops; the entries past it are left out, newest kinds first.
+func (r *ExchangeReport) trim(limit int) {
+	over := len(r.Headers) + len(r.Malformed) + len(r.Dropped) - limit
+	if limit <= 0 || over <= 0 {
+		return
+	}
+
+	cut := min(over, len(r.Dropped))
+	r.Dropped = r.Dropped[:len(r.Dropped)-cut]
+	over -= cut
+
+	cut = min(over, len(r.Malformed))
+	r.Malformed = r.Malformed[:len(r.Malformed)-cut]
+	over -= cut
+
+	r.Headers = r.Headers[:len(r.Headers)-over]
+}
+
 // mergeDrops appends the import's own drops to the reader's, in the same stable order.
-func mergeDrops(read []exchange.ReportEntry, own drops) []exchange.ReportEntry {
+func mergeDrops(read []exchange.ReportEntry, own *drops) []exchange.ReportEntry {
 	entries := append([]exchange.ReportEntry(nil), read...)
 	for key, n := range own.counts {
 		entries = append(entries, exchange.ReportEntry{

@@ -13,7 +13,7 @@ import (
 
 // The import reports values of its own, such as invalid tags, and a file can make as many
 // of those as it has records. They count towards the same limit as the reader's: past it,
-// the import stops after the batch that crossed it.
+// the import stops, and the batch that crossed it is not written.
 func TestExchangeImportStopsAtTooManyDistinctDropsOfItsOwn(t *testing.T) {
 	t.Parallel()
 
@@ -30,8 +30,50 @@ func TestExchangeImportStopsAtTooManyDistinctDropsOfItsOwn(t *testing.T) {
 		), options)
 	require.ErrorIs(t, err, exchange.ErrTooMuchReported)
 	assert.Contains(t, err.Error(), "more than 3 headers, malformed lines and distinct dropped entries")
-	assert.Equal(t, 3, report.New, "the batches up to the one that crossed the limit are written")
-	assert.Equal(t, 3, count(t, db, `SELECT count(*) FROM torrents`))
+	assert.Equal(t, 2, report.New, "the batches before the one that crossed the limit are written")
+	assert.Equal(t, 2, count(t, db, `SELECT count(*) FROM torrents`))
+}
+
+// One record can carry as many distinct invalid tags as its line holds. The import stops
+// at the limit while it plans the batch, so it neither holds nor reports more than the
+// limit, and the batch that crossed it is not written.
+func TestExchangeImportStopsAtTheLimitWithinOneRecord(t *testing.T) {
+	t.Parallel()
+
+	db := dbtest.New(t)
+	options := alice()
+	options.Limits = exchange.Limits{MaxReported: 3}
+
+	tags := make([]string, 50)
+	for i := range tags {
+		tags[i] = `"Bad ` + strings.Repeat("x", i) + `"`
+	}
+
+	report, err := newExchangeImporter(db).Import(t.Context(), exchangeFile(
+		`{"infoHash":"`+hashHex(1)+`","name":"one","magnes":{"tags":[`+strings.Join(tags, ",")+`]}}`,
+	), options)
+	require.ErrorIs(t, err, exchange.ErrTooMuchReported)
+	assert.LessOrEqual(t, len(report.Headers)+len(report.Malformed)+len(report.Dropped), 3)
+	assert.Zero(t, report.New)
+	assert.Zero(t, count(t, db, `SELECT count(*) FROM torrents`))
+}
+
+// Malformed lines read after the import's own drops count against the same limit, so the
+// report never holds more than it, however the two are interleaved.
+func TestExchangeImportCountsItsOwnDropsAgainstLaterMalformedLines(t *testing.T) {
+	t.Parallel()
+
+	db := dbtest.New(t)
+	options := alice()
+	options.Limits = exchange.Limits{MaxReported: 4}
+
+	report, err := importer.NewExchangeImporter(db.Gorm, nil, importer.ExchangeConfig{BatchSize: 1}).Import(
+		t.Context(), exchangeFile(
+			`{"infoHash":"`+hashHex(1)+`","name":"one","magnes":{"tags":["Bad 1","Bad 2"]}}`,
+			"not json", "not json", "not json",
+		), options)
+	require.ErrorIs(t, err, exchange.ErrTooMuchReported)
+	assert.LessOrEqual(t, len(report.Headers)+len(report.Malformed)+len(report.Dropped), 4)
 }
 
 // The values the import reports are clipped like the reader's.

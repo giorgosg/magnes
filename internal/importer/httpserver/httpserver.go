@@ -47,12 +47,13 @@ const (
 	JSONMediaType   = "application/json"
 )
 
-// The input limits of POST /import. See exchange.Limits.
-const (
-	MaxLineBytes     = 1 << 20
-	MaxReported      = 1000
-	MaxReportedBytes = 256
-)
+// Limits bound what one POST /import can make the server hold: its sender is not trusted
+// with the server's memory. The CLI import reads the operator's own files without them.
+var Limits = exchange.Limits{
+	MaxLineBytes:     1 << 20,
+	MaxReported:      1000,
+	MaxReportedBytes: 256,
+}
 
 // The query parameters POST /import reads.
 const (
@@ -149,11 +150,6 @@ func parseOptions(query url.Values) (importer.ExchangeOptions, error) {
 	}
 
 	options.Origin = origin
-	options.Limits = exchange.Limits{
-		MaxLineBytes:     MaxLineBytes,
-		MaxReported:      MaxReported,
-		MaxReportedBytes: MaxReportedBytes,
-	}
 
 	if values, ok := query[overwriteHintsParam]; ok {
 		switch values[0] {
@@ -169,6 +165,8 @@ func parseOptions(query url.Values) (importer.ExchangeOptions, error) {
 }
 
 func (b builder) handle(ctx *gin.Context, i *importer.ExchangeImporter, options importer.ExchangeOptions) {
+	options.Limits = Limits
+
 	report, err := i.Import(ctx.Request.Context(), ctx.Request.Body, options)
 
 	response := newReportResponse(report)
@@ -176,7 +174,9 @@ func (b builder) handle(ctx *gin.Context, i *importer.ExchangeImporter, options 
 
 	if err != nil {
 		status = statusFor(err)
-		response.Error = err.Error()
+		// Clipped like the report's own strings: a format error quotes what the sender
+		// wrote, which can be most of a line.
+		response.Error = Limits.Clip(err.Error())
 
 		if status >= http.StatusInternalServerError {
 			if ctx.Request.Context().Err() != nil {

@@ -409,9 +409,10 @@ server's memory:
 - **A line** may be at most 1 MiB, not counting its newline. A longer line stops the import
   as soon as that much of it is read.
 - **The report** may hold at most 1000 entries: headers, malformed lines and distinct
-  dropped entries together. Repeats of one dropped entry are counted, not listed, so only
-  distinct entries add up. One more stops the import.
+  dropped entries together, including what the import drops itself, such as invalid tags.
+  Repeats of one dropped entry are counted, not listed, so only distinct entries add up.
+  One more stops the import, and the batch it was found in is not written.
 - **Each string the report keeps** — a path, a value, a malformed line's error or a
-  header's producer — is clipped to 256 bytes and marked with `…`.
+  header's producer — is clipped to 256 bytes and marked with `…`. So is the `error`.
 
 The CLI `import` and `check` read the operator's own files and apply no limits.
