@@ -157,6 +157,15 @@ This SQL dump is separate from the newline-delimited JSON `/import` protocol. A 
 administrative `pg_dump` still includes private data and is a database backup, not a
 catalogue export or shareable ban list.
 
+`bitmagnet export [--include-tags] <file|->` writes the same visible torrents as an
+[exchange file](exchange-file.md) instead. Use the catalogue export to copy a catalogue
+into another database at the **same** version, such as a test instance. Use the exchange
+file to share an index with another instance or program, whatever its version. It carries
+torrents, files, sources and the current classification, but not the work's catalogue
+metadata, which a receiver re-fetches. Unlike `task export-data`, it reads the instance's
+own configuration rather than the `PG*` variables. It is read-only and applies no
+migrations, and it pages through one snapshot, so it is safe on a large catalogue.
+
 Be careful with instances you do not own. bitmagnet is frequently self-hosted on slow
 hardware, where a single `count(*)` on `torrents` is genuinely disruptive.
 

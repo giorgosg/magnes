@@ -8,8 +8,8 @@ version of the software, and it is for backup and migration.
 This page is the contract. The reader and writer are `internal/exchange`, and the
 [frozen fixture](../internal/exchange/testdata/exchange-v1.jsonl) is the compatibility
 input for every reader and writer of version 1. Today the format, its reader and writer,
-and the `check` command exist. Export and import are specified below and are not built
-yet.
+the `check` command and the full `export` exist. Incremental export and import are
+specified below and are not built yet.
 
 ## Stream
 
@@ -232,12 +232,32 @@ code.
 
 ## Export
 
-- The export is a CLI command. It reads from a single snapshot.
+`bitmagnet export [--include-tags] <file|->` writes the visible catalogue to a file, or to
+standard output for `-`. A file is written beside its target and renamed into place only
+once the export has succeeded, so a failed export leaves any previous file intact. It exits
+`1` on a failure and `2` when it is not given exactly one output.
+
+- The export is a CLI command. It reads from a single snapshot, in pages of torrents, so
+  its memory use does not grow with the catalogue.
+- It writes one header, with `producer.program` `magnes`, the build's version, and the
+  snapshot's time as `exportedAt`.
 - Banned torrents are never written. Bans travel only as the
   [ban file](moderation-ban-file.md).
 - Source names are normalised to the label rule on the way out. A stored `Torrents CSV` is
   written as `torrents-csv`.
 - Origin prefixes are kept as stored.
+- Two stored names that normalise to one name become one entry. The earliest
+  `publishedAt` wins, and the peer counts come from the most recently updated row that
+  has one.
+- The record's `publishedAt` is the earliest across its sources.
+- `scrapedAt` is not written, because no stored value records when peer counts were
+  observed. A source row's `updated_at` also moves on writes that leave the counts alone.
+- The classification is the torrent's current one. A classification that knows nothing,
+  an empty `inferredTitle`, and empty `languages` and `episodes` are unknown, so they are
+  absent.
+- `magnes.tags` is written only with `--include-tags`.
+- An internal value with no spelling in the format, or a source name that cannot be
+  normalised, stops the export with an error that names the value and the torrent.
 - Full export ships first. `--since` follows:
   - The cursor is the newest `updated_at` across every table a record is built from,
     because `torrents.updated_at` alone misses seeder changes.
