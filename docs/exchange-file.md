@@ -8,8 +8,7 @@ version of the software, and it is for backup and migration.
 This page is the contract. The reader and writer are `internal/exchange`, and the
 [frozen fixture](../internal/exchange/testdata/exchange-v1.jsonl) is the compatibility
 input for every reader and writer of version 1. Today the format, its reader and writer,
-the `check` command, the full `export`, and the CLI and HTTP imports exist. Incremental
-export is specified below and is not built yet.
+the `check` command, the full and incremental `export`, and the CLI and HTTP imports exist.
 
 ## Stream
 
@@ -232,10 +231,11 @@ code.
 
 ## Export
 
-`bitmagnet export [--include-tags] <file|->` writes the visible catalogue to a file, or to
+`bitmagnet export [--include-tags] [--since <time>] <file|->` writes the visible catalogue to a file, or to
 standard output for `-`. A file is written beside its target and renamed into place only
 once the export has succeeded, so a failed export leaves any previous file intact. It exits
-`1` on a failure and `2` when it is not given exactly one output.
+`1` on a failure, and `2` when it is not given exactly one output or cannot read
+`--since` or `--overlap`.
 
 - The export is a CLI command. It reads from a single snapshot, in pages of torrents, so
   its memory use does not grow with the catalogue.
@@ -260,10 +260,35 @@ once the export has succeeded, so a failed export leaves any previous file intac
 - `magnes.tags` is written only with `--include-tags`.
 - An internal value with no spelling in the format, or a source name that cannot be
   normalised, stops the export with an error that names the value and the torrent.
-- Full export ships first. `--since` follows:
-  - The cursor is the newest `updated_at` across every table a record is built from,
-    because `torrents.updated_at` alone misses seeder changes.
-  - It re-reads an overlap window, because timestamps are taken before commit.
+### Incremental export
+
+`bitmagnet export --since <time> [--overlap <duration>] <file|->` writes only the visible
+torrents whose exchanged data changed at or after `<time>`. Each one is written in full, as
+a full export would write it. The header carries the requested `<time>` as `since`.
+
+- `<time>` is RFC 3339 with an offset, such as `2026-10-11T00:00:00Z`. Pass the previous
+  file's `exportedAt` to send what changed since it, then keep the new file's `exportedAt`
+  for the next run.
+- The export is **additive**. It never conveys a removed torrent, a removed tag, a removed
+  source or a new ban. A receiver that wants to mirror deletions needs a full export.
+- A torrent counts as changed when any of these is at or after the cursor:
+  - `torrents.updated_at`, which a metainfo write or a filled file list moves;
+  - a source's `updated_at`, which a scrape or an import moves;
+  - a classification's `updated_at`, which reclassification and enhancement move;
+  - its moderation decision's `updated_at`, so a torrent allowed out of quarantine is sent
+    even though none of its own rows changed;
+  - with `--include-tags` only, a tag's `updated_at`. Tags are insert-only, so a new tag
+    carries its own time. Without `--include-tags` a new tag changes nothing in the file.
+- `torrents.updated_at` alone is not enough. A scrape writes only the source row, and
+  reclassification writes only the classification.
+- File rows are insert-only and arrive with a `torrents` write, so they need no cursor of
+  their own.
+- **Overlap.** `updated_at` is stamped by the writer's clock before its transaction
+  commits. A change can therefore commit after an export whose snapshot had already
+  passed its time, and the next export would miss it. The export re-reads `--overlap`
+  before `<time>`, one hour by default, which also absorbs clock drift between the hosts
+  that write the catalogue and the database. Re-sending a record is harmless, because an
+  import is idempotent under the merge rules. `--overlap 0s` turns it off.
 
 ## Import
 

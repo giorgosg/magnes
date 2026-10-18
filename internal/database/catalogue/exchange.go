@@ -32,6 +32,12 @@ type ExchangeOptions struct {
 	Producer exchange.Producer
 	// IncludeTags writes each torrent's local tags as magnes.tags.
 	IncludeTags bool
+	// Since makes the export incremental: only torrents whose exchanged data changed at
+	// or after it are written.
+	Since model.Maybe[time.Time]
+	// Overlap re-reads changes stamped this long before Since, because a writer stamps
+	// updated_at before it commits. It does not change the header's since.
+	Overlap time.Duration
 	// PageSize bounds how many torrents are held in memory at once. Zero means
 	// DefaultExchangePageSize.
 	PageSize int
@@ -65,6 +71,7 @@ func ExportExchange(ctx context.Context, db Beginner, output io.Writer, options 
 	if err = writer.WriteHeader(exchange.Header{
 		Producer:   model.MaybeValid(options.Producer),
 		ExportedAt: model.MaybeValid(exportedAt),
+		Since:      options.Since,
 	}); err != nil {
 		return err
 	}
@@ -154,9 +161,26 @@ func (r exchangeReader) readPage(ctx context.Context, after []byte, limit int) (
 func (r exchangeReader) readTorrents(
 	ctx context.Context, after []byte, limit int,
 ) (records []exchange.Record, listed [][]byte, err error) {
-	rows, err := r.tx.Query(ctx, `SELECT info_hash, name, size, private, files_status::text FROM torrents
- WHERE info_hash > $1 AND `+VisibleInfoHash("torrents.info_hash")+`
- ORDER BY info_hash LIMIT $2`, after, limit)
+	query := `SELECT info_hash, name, size, private, files_status::text FROM torrents
+ WHERE info_hash > $1 AND ` + VisibleInfoHash("torrents.info_hash")
+	args := []any{after, limit}
+
+	if r.options.Since.Valid {
+		query += ` AND (torrents.updated_at >= $3
+ OR EXISTS (SELECT 1 FROM torrents_torrent_sources AS s WHERE s.info_hash = torrents.info_hash AND s.updated_at >= $3)
+ OR EXISTS (SELECT 1 FROM torrent_contents AS c WHERE c.info_hash = torrents.info_hash AND c.updated_at >= $3)
+ OR EXISTS (SELECT 1 FROM moderation_decisions AS d
+ WHERE d.identifier = ` + moderationIdentifier("torrents.info_hash") + ` AND d.updated_at >= $3)`
+		if r.options.IncludeTags {
+			query += `
+ OR EXISTS (SELECT 1 FROM torrent_tags AS g WHERE g.info_hash = torrents.info_hash AND g.updated_at >= $3)`
+		}
+
+		query += `)`
+		args = append(args, r.options.Since.Val.Add(-r.options.Overlap))
+	}
+
+	rows, err := r.tx.Query(ctx, query+` ORDER BY info_hash LIMIT $2`, args...)
 	if err != nil {
 		return nil, nil, fmt.Errorf("read torrents: %w", err)
 	}
