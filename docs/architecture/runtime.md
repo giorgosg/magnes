@@ -100,6 +100,7 @@ once carried a shutdown deadlock. Treat any change to a stop path as security-gr
 | `classifier`  | Inspect and test the classifier configuration and its JSON schema                     |
 | `enhancement` | `evaluate`, `preview`, `status`, `process`, `resume` — bounded enhancement operations |
 | `config`      | Show and validate resolved configuration                                              |
+| `check`       | Read an [exchange file](../exchange-file.md) without importing it; needs no database  |
 
 `internal/dev` is a **separate binary** with its own `commands` group, and nothing in it
 reaches the shipped surface above: `migrate` and `gorm` (the generators `task` calls), and

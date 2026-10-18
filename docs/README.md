@@ -23,6 +23,7 @@ These are _working notes_. New Magnes user documentation lives in
 | [upstream-status.md](upstream-status.md)         | Sending a change upstream, or weighing whether the `next` rewrite makes it moot       |
 | [integration-status.md](integration-status.md)   | Checking whether a candidate is already merged, queued, or rejected                   |
 | [auth.md](auth.md)                               | Configuring or deploying authentication, or running behind a reverse proxy            |
+| [exchange-file.md](exchange-file.md)             | Exchange file v1: shareable torrent records, version rules and `check`                |
 | [moderation-ban-file.md](moderation-ban-file.md) | Frozen shareable ban-file format, provenance and membership privacy limit             |
 | [moderation.md](moderation.md)                   | Granting moderator Permissions and reviewing private evidence and decisions           |
 | [adr/](adr/)                                     | A decision constrains future changes and the reason will not be obvious from the code |

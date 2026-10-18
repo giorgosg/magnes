@@ -25,23 +25,21 @@ type object struct {
 
 func newObject(n *notes, path string, raw json.RawMessage) (*object, error) {
 	var fields map[string]json.RawMessage
-	if !bytes.HasPrefix(bytes.TrimSpace(raw), []byte("{")) {
-		return nil, fmt.Errorf("%s: %w", displayPath(path), errNotObject)
+
+	err := errNotObject
+	if bytes.HasPrefix(bytes.TrimSpace(raw), []byte("{")) {
+		err = json.Unmarshal(raw, &fields)
 	}
 
-	if err := json.Unmarshal(raw, &fields); err != nil {
-		return nil, fmt.Errorf("%s: %w", displayPath(path), err)
+	if err != nil {
+		if path == "" {
+			return nil, err
+		}
+
+		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 
 	return &object{notes: n, path: path, fields: fields, known: make(map[string]struct{})}, nil
-}
-
-func displayPath(path string) string {
-	if path == "" {
-		return "line"
-	}
-
-	return path
 }
 
 func joinPath(path, key string) string {

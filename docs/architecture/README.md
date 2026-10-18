@@ -80,6 +80,7 @@ run as a set of registered workers.
 | `internal/httpserver/`  | gin engine, middleware, option registration                                    |
 | `internal/auth/`        | Identity, RBAC, API keys, JWT, users — see [auth.md](auth.md)                  |
 | `internal/importer/`    | Bulk import path, used by external importers                                   |
+| `internal/exchange/`    | Exchange-file reader and writer — see [exchange-file.md](../exchange-file.md)  |
 | `internal/moderation/`  | Exact decisions, keyword quarantine and catalogue visibility                   |
 | `internal/health/`      | Health checks reported over GraphQL                                            |
 | `internal/worker/`      | The registry every long-running thing registers with                           |
