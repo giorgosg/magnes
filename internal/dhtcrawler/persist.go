@@ -2,6 +2,7 @@ package dhtcrawler
 
 import (
 	"context"
+	"database/sql/driver"
 	"strings"
 	"time"
 
@@ -12,7 +13,6 @@ import (
 	"github.com/bitmagnet-io/bitmagnet/internal/protocol"
 	"github.com/bitmagnet-io/bitmagnet/internal/protocol/metainfo"
 	"github.com/prometheus/client_golang/prometheus"
-	"gorm.io/gen"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -471,7 +471,7 @@ func (c *crawler) persistSourceBatch(ctx context.Context, scrapes []infoHashWith
 func (c *crawler) writeEligibleSourceBatch(
 	ctx context.Context, scrapes []infoHashWithScrape, tx *dao.Query,
 ) (int, error) {
-	srcs := make([]*model.TorrentsTorrentSource, 0, len(scrapes))
+	hashes := make([]driver.Valuer, 0, len(scrapes))
 
 	hashSet := make(map[protocol.ID]struct{}, len(scrapes))
 	for _, s := range scrapes {
@@ -480,12 +480,44 @@ func (c *crawler) writeEligibleSourceBatch(
 		}
 
 		hashSet[s.infoHash] = struct{}{}
+		hashes = append(hashes, s.infoHash)
+	}
+
+	// A torrent deleted since triage would fail the foreign key and reject the whole
+	// batch, so skip it here. KEY SHARE is the lock the foreign key check takes
+	// anyway; taking it first stops a delete committing before the insert.
+	var existing []protocol.ID
+	// Raw because GORM's locking clause accepts only UPDATE and SHARE, and SHARE
+	// would also hold off concurrent updates to these torrents.
+	if err := tx.Torrent.WithContext(ctx).UnderlyingDB().
+		Raw("SELECT info_hash FROM torrents WHERE info_hash IN ? ORDER BY info_hash FOR KEY SHARE", hashes).
+		Scan(&existing).Error; err != nil {
+		return 0, err
+	}
+
+	exists := make(map[protocol.ID]struct{}, len(existing))
+	for _, hash := range existing {
+		exists[hash] = struct{}{}
+	}
+
+	srcs := make([]*model.TorrentsTorrentSource, 0, len(existing))
+
+	for _, s := range scrapes {
+		if _, ok := exists[s.infoHash]; !ok {
+			continue
+		}
+
+		delete(exists, s.infoHash)
 
 		if src, err := createTorrentSourceModel(s); err != nil {
 			c.logger.Errorf("error creating torrent source model: %s", err.Error())
 		} else {
 			srcs = append(srcs, &src)
 		}
+	}
+
+	if len(srcs) == 0 {
+		return 0, nil
 	}
 
 	persistErr := tx.WithContext(ctx).TorrentsTorrentSource.Clauses(
@@ -503,11 +535,6 @@ func (c *crawler) writeEligibleSourceBatch(
 				string(c.dao.TorrentsTorrentSource.UpdatedAt.ColumnName()),
 			}),
 		},
-	).Where(
-		// check that the torrent record hasn't been deleted:
-		gen.Exists(tx.WithContext(ctx).Torrent.Where(
-			c.dao.Torrent.InfoHash.EqCol(c.dao.TorrentsTorrentSource.InfoHash),
-		)),
 	).CreateInBatches(srcs, 100)
 
 	return len(srcs), persistErr
