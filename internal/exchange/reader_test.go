@@ -18,7 +18,7 @@ const (
 
 // readAll drains a stream, collecting lines and skipped-line errors, and stopping at
 // the end or at a fatal error.
-func readAll(t *testing.T, input string) ([]exchange.Line, []*exchange.MalformedLineError, error, *exchange.Reader) {
+func readAll(t *testing.T, input string) ([]exchange.Line, []*exchange.MalformedLineError, *exchange.Reader, error) {
 	t.Helper()
 
 	reader := exchange.NewReader(strings.NewReader(input))
@@ -31,7 +31,7 @@ func readAll(t *testing.T, input string) ([]exchange.Line, []*exchange.Malformed
 	for {
 		line, err := reader.Next()
 		if errors.Is(err, io.EOF) {
-			return lines, malformed, nil, reader
+			return lines, malformed, reader, nil
 		}
 
 		var skipped *exchange.MalformedLineError
@@ -41,7 +41,7 @@ func readAll(t *testing.T, input string) ([]exchange.Line, []*exchange.Malformed
 		}
 
 		if err != nil {
-			return lines, malformed, err, reader
+			return lines, malformed, reader, err
 		}
 
 		lines = append(lines, line)
@@ -57,7 +57,7 @@ func TestStreamHeaderAppliesToFollowingRecords(t *testing.T) {
 		`"producer":{"program":"other","version":"2"}}` + "\n" +
 		`{"infoHash":"` + hashA + `","name":"two"}` + "\n"
 
-	lines, malformed, err, _ := readAll(t, input)
+	lines, malformed, _, err := readAll(t, input)
 	require.NoError(t, err)
 	require.Empty(t, malformed)
 	require.Len(t, lines, 4)
@@ -79,7 +79,7 @@ func TestStreamRecordBeforeHeaderIsFatal(t *testing.T) {
 
 	input := `{"infoHash":"` + hashA + `","name":"one"}` + "\n" + header10 + "\n"
 
-	lines, _, err, reader := readAll(t, input)
+	lines, _, reader, err := readAll(t, input)
 	require.ErrorIs(t, err, exchange.ErrRecordBeforeHeader)
 	assert.Empty(t, lines)
 
@@ -104,7 +104,7 @@ func TestStreamMalformedLinesAreSkippedWithTheirNumbers(t *testing.T) {
 		`[1,2]` + "\n" +
 		`{"infoHash":"` + hashA + `","name":"fine"}` + "\n"
 
-	lines, malformed, err, _ := readAll(t, input)
+	lines, malformed, _, err := readAll(t, input)
 	require.NoError(t, err)
 
 	numbers := make([]int, 0, len(malformed))

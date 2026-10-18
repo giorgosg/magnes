@@ -55,7 +55,7 @@ func TestInvalidSourceNameDropsOnlyThatEntry(t *testing.T) {
 		`{"infoHash":"` + hashA + `","name":"one","sources":[` +
 		`{"source":"Torrents CSV","seeders":3},{"source":"alice:dht","seeders":5},{"seeders":1}]}` + "\n"
 
-	lines, malformed, err, reader := readAll(t, input)
+	lines, malformed, reader, err := readAll(t, input)
 	require.NoError(t, err)
 	require.Empty(t, malformed)
 	require.Len(t, lines, 2)
@@ -66,7 +66,12 @@ func TestInvalidSourceNameDropsOnlyThatEntry(t *testing.T) {
 	assert.Equal(t, "alice:dht", sources.Val[0].Name)
 
 	assert.Equal(t, []exchange.ReportEntry{
-		{Scope: exchange.ScopeRecord, Reason: exchange.ReasonInvalidSourceName, Path: "sources[].source", Count: 1},
+		{
+			Scope:  exchange.ScopeRecord,
+			Reason: exchange.ReasonInvalidSourceName,
+			Path:   "sources[].source",
+			Count:  1,
+		},
 		{
 			Scope:  exchange.ScopeRecord,
 			Reason: exchange.ReasonInvalidSourceName,

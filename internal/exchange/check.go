@@ -54,7 +54,11 @@ func Check(src io.Reader) (CheckResult, error) {
 			}
 
 			if line.Header != nil {
-				result.Headers = append(result.Headers, CheckedHeader{Line: line.Number, Header: *line.Header})
+				result.Headers = append(
+					result.Headers,
+					CheckedHeader{Line: line.Number, Header: *line.Header},
+				)
+
 				continue
 			}
 

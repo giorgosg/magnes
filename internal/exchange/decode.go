@@ -82,6 +82,7 @@ func isNull(raw json.RawMessage) bool {
 
 func decodeJSON[T any](raw json.RawMessage) (T, error) {
 	var v T
+
 	err := json.Unmarshal(raw, &v)
 
 	return v, err
@@ -198,7 +199,12 @@ func decodeHeader(n *notes, fields *object) (Header, error) {
 
 	// An unknown minor version only adds what this reader can ignore.
 	if header.Version.Major != CurrentVersion.Major {
-		return header, fmt.Errorf("%w: %d.%d", ErrUnsupportedVersion, header.Version.Major, header.Version.Minor)
+		return header, fmt.Errorf(
+			"%w: %d.%d",
+			ErrUnsupportedVersion,
+			header.Version.Major,
+			header.Version.Minor,
+		)
 	}
 
 	formatObject.done()
@@ -280,7 +286,7 @@ func decodeInfoHash(raw json.RawMessage) (protocol.ID, error) {
 	return protocol.ParseID(s)
 }
 
-func decodeRecord(n *notes, fields *object) (Record, error) {
+func decodeRecord(fields *object) (Record, error) {
 	var (
 		rec Record
 		err error

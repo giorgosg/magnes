@@ -115,6 +115,7 @@ func (r *Reader) decodeLine(data []byte) (Line, error) {
 
 		r.header = &header
 		r.report.merge(n)
+
 		line.Header = &header
 
 		return line, nil
@@ -125,12 +126,13 @@ func (r *Reader) decodeLine(data []byte) (Line, error) {
 		return line, r.fatal
 	}
 
-	record, err := decodeRecord(n, fields)
+	record, err := decodeRecord(fields)
 	if err != nil {
 		return line, &MalformedLineError{Line: r.line, Err: err}
 	}
 
 	r.report.merge(n)
+
 	line.Record = &record
 
 	return line, nil

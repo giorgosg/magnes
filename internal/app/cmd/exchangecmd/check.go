@@ -132,7 +132,8 @@ func writeSection(out *strings.Builder, title string, reason exchange.Reason, dr
 		}
 
 		line := fmt.Sprintf("  %s %s", entry.Scope, entry.Path)
-		if entry.Value != "" || reason == exchange.ReasonUnknownValue || reason == exchange.ReasonInvalidSourceName {
+		if entry.Value != "" || reason == exchange.ReasonUnknownValue ||
+			reason == exchange.ReasonInvalidSourceName {
 			line += fmt.Sprintf(" %q", entry.Value)
 		}
 

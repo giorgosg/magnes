@@ -28,9 +28,7 @@ func walkEnum[T ~string](t *testing.T, table enumTable[T], values []T) {
 
 	for _, v := range values {
 		spelling, err := table.format(v)
-		if !assert.NoError(t, err, "%s %q", table.field, v) {
-			continue
-		}
+		require.NoError(t, err, "%s %q", table.field, v)
 
 		back, ok := table.internal(spelling)
 		assert.True(t, ok, "%s %q", table.field, spelling)

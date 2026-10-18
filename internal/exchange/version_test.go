@@ -46,7 +46,7 @@ func TestHeaderVersionRules(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			lines, _, err, _ := readAll(t, tc.header+"\n"+record+"\n")
+			lines, _, _, err := readAll(t, tc.header+"\n"+record+"\n")
 			if tc.err != nil {
 				require.ErrorIs(t, err, tc.err)
 				assert.Empty(t, lines, "nothing after a refused header is read")

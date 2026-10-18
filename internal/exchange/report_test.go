@@ -20,7 +20,7 @@ func TestUnknownFieldsAreReportedPerPathWithCounts(t *testing.T) {
 		`{"infoHash":"` + hashA + `","name":"two","Name":"case variant",` +
 		`"sources":[{"source":"dht","completed":2,"history":[{"seeders":1}]}]}` + "\n"
 
-	lines, malformed, err, reader := readAll(t, input)
+	lines, malformed, reader, err := readAll(t, input)
 	require.NoError(t, err)
 	require.Empty(t, malformed)
 	require.Len(t, lines, 3)
@@ -31,7 +31,12 @@ func TestUnknownFieldsAreReportedPerPathWithCounts(t *testing.T) {
 		{Scope: exchange.ScopeHeader, Reason: exchange.ReasonUnknownField, Path: "format.flavour", Count: 1},
 		{Scope: exchange.ScopeRecord, Reason: exchange.ReasonUnknownField, Path: "Name", Count: 1},
 		{Scope: exchange.ScopeRecord, Reason: exchange.ReasonUnknownField, Path: "infoHashV2", Count: 1},
-		{Scope: exchange.ScopeRecord, Reason: exchange.ReasonUnknownField, Path: "sources[].completed", Count: 3},
+		{
+			Scope:  exchange.ScopeRecord,
+			Reason: exchange.ReasonUnknownField,
+			Path:   "sources[].completed",
+			Count:  3,
+		},
 		{Scope: exchange.ScopeRecord, Reason: exchange.ReasonUnknownField, Path: "sources[].history", Count: 1},
 		{Scope: exchange.ScopeRecord, Reason: exchange.ReasonUnknownField, Path: "tags", Count: 1},
 	}, reader.Report())
@@ -44,7 +49,7 @@ func TestNullIsReadAsAbsentAndReported(t *testing.T) {
 		`{"infoHash":"` + hashA + `","name":"one","size":null,"private":false,` +
 		`"sources":[null,{"source":"dht","seeders":null,"leechers":0}]}` + "\n"
 
-	lines, malformed, err, reader := readAll(t, input)
+	lines, malformed, reader, err := readAll(t, input)
 	require.NoError(t, err)
 	require.Empty(t, malformed)
 	require.Len(t, lines, 2)
@@ -74,7 +79,7 @@ func TestMalformedLineContributesNothingToTheReport(t *testing.T) {
 	input := header10 + "\n" +
 		`{"infoHash":"` + hashA + `","name":"one","extra":1,"size":"big"}` + "\n"
 
-	_, malformed, err, reader := readAll(t, input)
+	_, malformed, reader, err := readAll(t, input)
 	require.NoError(t, err)
 	require.Len(t, malformed, 1)
 	assert.Empty(t, reader.Report())
@@ -87,7 +92,7 @@ func TestEmptyArraysAndAbsentArraysDiffer(t *testing.T) {
 		`{"infoHash":"` + hashA + `","name":"one","files":[],"sources":[]}` + "\n" +
 		`{"infoHash":"` + hashA + `","name":"two"}` + "\n"
 
-	lines, _, err, _ := readAll(t, input)
+	lines, _, _, err := readAll(t, input)
 	require.NoError(t, err)
 	require.Len(t, lines, 3)
 

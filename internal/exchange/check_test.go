@@ -49,8 +49,10 @@ func TestCheckReportsDropsMalformedLinesAndTags(t *testing.T) {
 	assert.Equal(t, []exchange.TagCount{{Tag: "keep", Count: 2}, {Tag: "hd", Count: 1}}, result.Tags,
 		"most frequent first, then by name")
 	assert.Equal(t, []exchange.ReportEntry{
-		{Scope: exchange.ScopeRecord, Reason: exchange.ReasonInvalidSourceName, Path: "sources[].source",
-			Value: "Bad Name", Count: 1},
+		{
+			Scope: exchange.ScopeRecord, Reason: exchange.ReasonInvalidSourceName, Path: "sources[].source",
+			Value: "Bad Name", Count: 1,
+		},
 		{Scope: exchange.ScopeRecord, Reason: exchange.ReasonNull, Path: "size", Count: 1},
 		{Scope: exchange.ScopeRecord, Reason: exchange.ReasonUnknownField, Path: "future", Count: 1},
 	}, result.Dropped)

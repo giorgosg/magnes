@@ -15,7 +15,7 @@ func readClassification(t *testing.T, classification string) (exchange.Record, [
 	input := header10 + "\n" +
 		`{"infoHash":"` + hashA + `","name":"one","magnes":{"classification":` + classification + `}}` + "\n"
 
-	lines, malformed, err, reader := readAll(t, input)
+	lines, malformed, reader, err := readAll(t, input)
 	require.NoError(t, err)
 	require.Empty(t, malformed)
 	require.Len(t, lines, 2)
@@ -41,7 +41,7 @@ func TestEnumSpellingsReadAsInternalValues(t *testing.T) {
 	threeD := func(c exchange.Classification) any { return c.Video.ThreeD.Val }
 	modifier := func(c exchange.Classification) any { return c.Video.Modifier.Val }
 
-	cases := []spelling{}
+	cases := make([]spelling, 0, 43)
 	for format, internal := range map[string]model.ContentType{
 		"movie": model.ContentTypeMovie, "tv-show": model.ContentTypeTvShow, "music": model.ContentTypeMusic,
 		"ebook": model.ContentTypeEbook, "comic": model.ContentTypeComic, "audiobook": model.ContentTypeAudiobook,
@@ -100,8 +100,10 @@ func TestEnumSpellingsReadAsInternalValues(t *testing.T) {
 func TestUnknownEnumValueIsDroppedAndReported(t *testing.T) {
 	t.Parallel()
 
-	rec, report := readClassification(t,
-		`{"contentType":"podcast","video":{"resolution":"1080p","codec":"hevc","source":"WEBDL"},"releaseGroup":"GRP"}`)
+	rec, report := readClassification(
+		t,
+		`{"contentType":"podcast","video":{"resolution":"1080p","codec":"hevc","source":"WEBDL"},"releaseGroup":"GRP"}`,
+	)
 
 	c := rec.Magnes.Classification.Val
 	assert.False(t, c.ContentType.Valid)
@@ -175,7 +177,8 @@ func TestEpisodesEntriesAreEpisodesOrWholeSeasonExactlyOne(t *testing.T) {
 func TestWorkIdentityNeedsBothSourceAndID(t *testing.T) {
 	t.Parallel()
 
-	rec, report := readClassification(t, `{"work":{"source":"tmdb","id":"123"},"inferredTitle":"X","inferredYear":2021}`)
+	rec, report := readClassification(t,
+		`{"work":{"source":"tmdb","id":"123"},"inferredTitle":"X","inferredYear":2021}`)
 	c := rec.Magnes.Classification.Val
 	assert.Equal(t, model.MaybeValid(exchange.Work{Source: "tmdb", ID: "123"}), c.Work)
 	assert.Equal(t, model.MaybeValid("X"), c.InferredTitle)
@@ -187,7 +190,10 @@ func TestWorkIdentityNeedsBothSourceAndID(t *testing.T) {
 	assert.False(t, c.Work.Valid, "a half identity is not kept")
 	assert.True(t, c.InferredYear.Valid, "the rest of the classification is kept")
 	assert.Equal(t, []exchange.ReportEntry{
-		{Scope: exchange.ScopeRecord, Reason: exchange.ReasonInvalidEntry, Path: "magnes.classification.work", Count: 1},
+		{
+			Scope: exchange.ScopeRecord, Reason: exchange.ReasonInvalidEntry,
+			Path: "magnes.classification.work", Count: 1,
+		},
 	}, report)
 }
 
@@ -197,7 +203,7 @@ func TestMagnesTagsAreRead(t *testing.T) {
 	input := header10 + "\n" +
 		`{"infoHash":"` + hashA + `","name":"one","magnes":{"tags":["4k-candidate","keep"],"other":1}}` + "\n"
 
-	lines, _, err, reader := readAll(t, input)
+	lines, _, reader, err := readAll(t, input)
 	require.NoError(t, err)
 	require.Len(t, lines, 2)
 
