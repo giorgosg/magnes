@@ -28,7 +28,7 @@ in every signature in the tree.
 | `torrents`                                                                             | infohash, name, size, private, files_status, files_count                                             |
 | `torrent_files`                                                                        | one row per stored file, capped by `SaveFilesThreshold`                                              |
 | `torrent_pieces`                                                                       | piece hashes, only when `SavePieces` is on                                                           |
-| `torrent_sources`                                                                      | the catalogue of sources (`dht`, importer names)                                                     |
+| `torrent_sources`                                                                      | the catalogue of sources: `dht`, legacy importer names, `<origin>:<source>` from imports             |
 | `torrents_torrent_sources`                                                             | per-source seeders, leechers, scraped_at (when the counts were observed), published_at, import_id    |
 | `torrent_hints`                                                                        | externally supplied classification hints from importers                                              |
 | `torrent_tags`                                                                         | free-form tags                                                                                       |

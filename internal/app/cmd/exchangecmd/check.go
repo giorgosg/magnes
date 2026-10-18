@@ -18,6 +18,10 @@ type Result struct {
 	Command *cli.Command `group:"commands"`
 }
 
+// fileArgs is the one argument every exchange command takes: a file, or - for a standard
+// stream.
+const fileArgs = "<file|->"
+
 // Exit codes: 1 for a failure, such as a file that cannot be read as an exchange file or an
 // export that could not be written, and 2 for a usage error.
 const (
@@ -36,7 +40,7 @@ func NewCheck() Result {
 			"fields, nulls, unknown values, invalid source names and invalid entries. It also lists " +
 			"incoming magnes tags. It exits 1 on an unsupported format or major version, or a record " +
 			"before the first header.",
-		ArgsUsage: "<file|->",
+		ArgsUsage: fileArgs,
 		Action:    check,
 	}}
 }

@@ -36,7 +36,7 @@ func NewExport(p ExportParams) Result {
 			"for -. Pending and banned torrents are never written. A file is replaced only once the " +
 			"export has succeeded. Tags are written only with --include-tags. For a same-version backup, " +
 			"use the catalogue export (task export-data) instead.",
-		ArgsUsage: "<file|->",
+		ArgsUsage: fileArgs,
 		Flags: []cli.Flag{
 			&cli.BoolFlag{
 				Name:  "include-tags",

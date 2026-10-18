@@ -121,6 +121,31 @@ anyway; taking it first means a delete still in flight is waited for and then sk
 rather than failing the insert. GORM silently drops a `Where` on `Create` with
 `OnConflict`, which is why this is not a `WHERE EXISTS` guard on the insert.
 
+## Exchange-file imports
+
+The other writer to the catalogue is the exchange-file import, `ExchangeImporter` in
+`internal/importer/exchange*.go`, behind the CLI `import`. The merge rules are in
+[exchange-file.md](../exchange-file.md). This section covers how it meets the crawler.
+
+- **Source rows never collide.** Every imported source is stored as
+  `<origin>:<source>` ([ADR 0010](../adr/0010-prefix-imported-sources-with-their-origin.md)),
+  so an import never writes a `dht` row, and the crawler never writes a prefixed one.
+- **They share a torrent row.** Each batch goes through `moderation.Service.Ingest`, as
+  the crawler's batches do. It holds every infohash's moderation lock until commit, so
+  a crawler batch and an import batch never write one torrent at the same time.
+- **The rules are SQL conditions,** not read-then-write: `INSERT … ON CONFLICT` and
+  `UPDATE … WHERE`. They hold against any writer that does not take those locks.
+  - A file list is taken only `WHERE files_status IN ('no_info', 'over_threshold')`.
+  - Peer counts merge inside the upsert.
+  - Name, size and private are written only by the insert of a new torrent.
+- **The batch's torrents are locked first, in infohash order.** The first statement
+  inserts the new torrents. It also locks the existing ones, through
+  `ON CONFLICT DO UPDATE … WHERE false`. A delete in flight is waited for, so no foreign
+  key can fail later in the batch.
+- **Cancellation** cancels the batch's queries. pgx closes the connection, the backend
+  rolls back, and the import returns at once. Reading runs on its own goroutine, so an
+  import stalled on its input still stops.
+
 ## Starting and stopping
 
 `OnStart` gives the crawler a context of its own, deliberately not derived from the start

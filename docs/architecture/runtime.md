@@ -102,6 +102,7 @@ once carried a shutdown deadlock. Treat any change to a stop path as security-gr
 | `config`      | Show and validate resolved configuration                                              |
 | `check`       | Read an [exchange file](../exchange-file.md) without importing it; needs no database  |
 | `export`      | Write the visible catalogue as an [exchange file](../exchange-file.md)                |
+| `import`      | Read an [exchange file](../exchange-file.md) into the catalogue under the merge rules |
 
 `internal/dev` is a **separate binary** with its own `commands` group, and nothing in it
 reaches the shipped surface above: `migrate` and `gorm` (the generators `task` calls), and

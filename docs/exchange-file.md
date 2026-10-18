@@ -8,8 +8,8 @@ version of the software, and it is for backup and migration.
 This page is the contract. The reader and writer are `internal/exchange`, and the
 [frozen fixture](../internal/exchange/testdata/exchange-v1.jsonl) is the compatibility
 input for every reader and writer of version 1. Today the format, its reader and writer,
-the `check` command and the full `export` exist. Incremental export and import are
-specified below and are not built yet.
+the `check` command, the full `export` and the CLI `import` exist. Incremental export and
+the HTTP import are specified below and are not built yet.
 
 ## Stream
 
@@ -269,7 +269,8 @@ once the export has succeeded, so a failed export leaves any previous file intac
 
 - An import requires an **origin label**: lowercase kebab-case, such as `alice`. See
   [ADR 0010](adr/0010-prefix-imported-sources-with-their-origin.md).
-- `/import` accepts only exchange files. The legacy flat format is dropped.
+- `/import` accepts only exchange files. The legacy flat format is dropped. Not built
+  yet: today `POST /import` still reads the legacy flat format.
 - Interfaces:
   - CLI `import --origin <label> [--overwrite-hints] <file|->`, which reads a file or
     standard input.
@@ -291,3 +292,47 @@ once the export has succeeded, so a failed export leaves any previous file intac
 - Source entries whose names break the label rule are dropped and reported.
 - A database-aware dry run, reporting new, would-update and banned counts, can follow
   `check`. The merge rules above define what it would report.
+
+### How the import applies the rules
+
+- **A new torrent** is stored as the crawler would store it:
+  - A missing `size` is the sum of a complete file list, and otherwise `0`. A missing
+    `private` is `false`.
+  - The receiver's own file threshold (`dht_crawler.save_files_threshold`) applies.
+    Padding entries (`.pad/…`) are not stored.
+  - A single entry named after the torrent is stored as a single-file torrent.
+  - A partial list is stored, marked partial. An empty list counts as unknown.
+- **Files of an existing torrent** are filled only from a complete list, and only when the
+  local list is unknown or partial. A stored entry with the same index or path is kept.
+- **Peer counts** merge within one stored source:
+  - Dated counts replace the stored ones when the stored `scrapedAt` is unknown or older,
+    and their `scrapedAt` is stored with them.
+  - Undated counts, and counts dated older, only fill counts that are unknown.
+  - A `scrapedAt` with no count is not stored.
+  - The earliest `publishedAt` wins. The record's own `publishedAt` is not stored,
+    because it derives from the sources.
+- **The hint:**
+  - `work` maps to the hint's work identity, `inferredTitle` and `inferredYear` to its
+    title and year, and the other attributes directly.
+  - A classification with no `contentType` becomes no hint, because a hint needs one.
+  - A `work` from a provider other than `tmdb`, `imdb` or `tvdb` is left out of the hint.
+  - `--overwrite-hints` replaces the whole hint, so two classifications are never mixed.
+  - Each of these is reported.
+- **Tags** that are not valid local tag names are dropped and reported. A valid name is
+  lowercase kebab-case, at most 30 characters.
+- **Values too large to store** skip the record, which is reported: a size above
+  2⁶³−1, or a file index or peer count above 2³¹−1.
+- **Classification:** new and changed torrents are queued for classification.
+- **Batches:** the import commits every 100 records, each batch in one transaction under
+  the same moderation locks the crawler takes. Every merge rule is a condition of the SQL
+  write itself, so it holds against whatever another writer committed first.
+- **Interruption:** Ctrl-C or SIGTERM stops the import mid-file. The batch in flight is
+  rolled back, committed batches stay, and the report is printed. Importing a file again
+  changes nothing that the first import wrote, so an interrupted import is resumed by
+  running it again.
+
+`bitmagnet import` prints the headers, the record count and malformed lines. It then
+prints new, updated, unchanged, banned and skipped torrents, hints written and kept, tags
+added, and every dropped field, value and entry with its count. It exits `1` on a fatal
+error or an interruption. It exits `2` on a usage error, including an invalid origin
+label, before it reads anything or opens the database.

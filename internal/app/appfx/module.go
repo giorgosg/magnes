@@ -77,6 +77,7 @@ func New() fx.Option {
 			enhancementcmd.LogOutput,
 			exchangecmd.NewCheck,
 			exchangecmd.NewExport,
+			exchangecmd.NewImport,
 			reprocesscmd.New,
 			processcmd.New,
 			workercmd.New,

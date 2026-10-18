@@ -1,6 +1,6 @@
 # Prefix imported sources with their origin
 
-Accepted design, 2026-10-18; not yet implemented. An exchange file lists the sources that
+Accepted design, 2026-10-18. Implemented by the CLI `import` command. An exchange file lists the sources that
 observed each torrent, such as `dht` or `rarbg`. Every import is given an origin label, and
 each incoming source is stored as `<origin>:<source>`. Importing Alice's file writes
 `alice:dht` and `alice:rarbg`. An import never writes an unprefixed source, so a plain
