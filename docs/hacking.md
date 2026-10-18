@@ -300,8 +300,10 @@ lookups. See [the operator import contract](moderation-ban-file.md) and
 
 Automatic enhancement tests exercise PostgreSQL admission locks, leases and per-request
 spending with fake providers. `TestSchedulerSelectionUsesRankIndexAtFixtureScale` uses
-a separately migrated `btm_seed_29` template and checks both group query plans. Rebuild
-from a disposable clone of the prior template; preserve source and sealed fixtures.
+a seed template at the tree's high-water mark and checks both group query plans. It
+landed with `btm_seed_29`; since migration `00030` the seeded tests need `btm_seed_30`, a
+nullable-column migration of a clone of `btm_seed_29`. Rebuild from a disposable clone of
+the prior template; preserve source and sealed fixtures.
 Scheduling columns on `torrents` are intentionally excluded by `internal/database/gen`
 so generated ingestion upserts cannot overwrite SQL-maintained readiness/ranking.
 

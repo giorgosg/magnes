@@ -100,14 +100,12 @@ func TestExchangeImportReturnsWhenCancelledWhileItsBatchWaits(t *testing.T) {
 		`{"infoHash":"`+hashHex(2)+`","name":"Contended","sources":[{"source":"dht","seeders":1}]}`,
 	))
 
+	// The first batch commits before the second waits. Waiting for its row first matters:
+	// a commit can itself wait briefly on a lock, the cluster-wide one NOTIFY takes.
 	require.Eventually(t, func() bool {
-		return count(
-			t,
-			db,
-			`SELECT count(*) FROM pg_stat_activity WHERE datname = $1 AND wait_event_type = 'Lock'`,
-			db.Name,
-		) > 0
-	}, 5*time.Second, 10*time.Millisecond, "the second batch should wait on the locked torrent")
+		return count(t, db, `SELECT count(*) FROM torrents WHERE info_hash = $1`, protocol.ID{1}.Bytes()) == 1
+	}, 5*time.Second, 10*time.Millisecond, "the first batch should commit")
+	waitForLockWaits(t, db, 1, "the second batch should wait on the locked torrent")
 
 	cancel()
 

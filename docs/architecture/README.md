@@ -87,7 +87,7 @@ run as a set of registered workers.
 | `internal/concurrency/` | Batching channels, buffered concurrent channels, keyed limiters                |
 | `internal/lazy/`        | `lazy.Lazy[T]`, how fx factories defer expensive construction                  |
 | `pkg/json_schema/`      | JSON schema types, used by `internal/config/param`                             |
-| `migrations/`           | Goose SQL migrations, `00001`–`00029`                                          |
+| `migrations/`           | Goose SQL migrations, `00001`–`00030`                                          |
 | `graphql/`              | Schema and operations — the _source_ for `internal/gql`                        |
 
 The `static` HTTP component serves the bundled Elm UI by default in release builds,

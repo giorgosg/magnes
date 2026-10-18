@@ -35,14 +35,7 @@ func importWhileHeld(t *testing.T, db *dbtest.DB, holder pgx.Tx, records ...stri
 
 	done := startImport(t.Context(), db, exchangeFile(records...))
 
-	require.Eventually(t, func() bool {
-		return count(
-			t,
-			db,
-			`SELECT count(*) FROM pg_stat_activity WHERE datname = $1 AND wait_event_type = 'Lock'`,
-			db.Name,
-		) > 0
-	}, 5*time.Second, 10*time.Millisecond, "the import should wait for the concurrent write")
+	waitForLockWaits(t, db, 1, "the import should wait for the concurrent write")
 
 	require.NoError(t, holder.Commit(t.Context()))
 
@@ -178,14 +171,7 @@ func TestExchangeImportWaitsForAnInFlightDelete(t *testing.T) {
 		done <- importResult{report, err}
 	}()
 
-	require.Eventually(t, func() bool {
-		return count(
-			t,
-			db,
-			`SELECT count(*) FROM pg_stat_activity WHERE datname = $1 AND wait_event_type = 'Lock'`,
-			db.Name,
-		) > 0
-	}, 5*time.Second, 10*time.Millisecond, "the import should wait for the delete")
+	waitForLockWaits(t, db, 1, "the import should wait for the delete")
 
 	require.NoError(t, holder.Commit(t.Context()))
 
@@ -201,4 +187,124 @@ func TestExchangeImportWaitsForAnInFlightDelete(t *testing.T) {
 	require.Equal(t, "Again", torrentRowOf(t, db, deleted).Name)
 	require.Equal(t, map[string]sourceRow{"alice:dht": {Seeders: ptr(1)}}, sourceRows(t, db, deleted))
 	require.Equal(t, []string{"t"}, tagsOf(t, db, deleted))
+}
+
+// waitForLockWaits waits until n backends of the test database are waiting on a lock.
+func waitForLockWaits(t *testing.T, db *dbtest.DB, n int, why string) {
+	t.Helper()
+
+	require.Eventually(t, func() bool {
+		return count(t, db, lockWaits, db.Name) >= n
+	}, 5*time.Second, 10*time.Millisecond, why)
+}
+
+// lockWaits counts the backends of one database that are waiting on a lock.
+const lockWaits = `SELECT count(*) FROM pg_stat_activity WHERE datname = $1 AND wait_event_type = 'Lock'`
+
+// The enhancement scheduler claims a torrent and then updates it: the claim's foreign key
+// takes KEY SHARE on the torrent, and the update takes NO KEY UPDATE. The import's source
+// write fires enhancement_source_rank, which takes FOR UPDATE on the same torrent. If the
+// import already held NO KEY UPDATE, the scheduler's update would wait on the import while
+// the import waits on the claim's KEY SHARE: a deadlock that aborts one of them. Holding
+// only KEY SHARE, as the crawler does, lets the scheduler finish first.
+func TestExchangeImportDoesNotDeadlockWithTheEnhancementScheduler(t *testing.T) {
+	t.Parallel()
+
+	db := dbtest.New(t)
+	hash := protocol.ID{1}
+	seedTorrent(t, db, hash, "Contended", 10, false, "no_info")
+
+	// Pause the import after it has locked the torrent and before it writes the source,
+	// on the torrent_sources row it is about to create.
+	pause := holdRow(t, db, `INSERT INTO torrent_sources (key,name,created_at,updated_at)
+VALUES ('alice:dht','alice:dht',now(),now())`)
+
+	done := startImport(t.Context(), db, exchangeFile(
+		`{"infoHash":"`+hashHex(1)+`","name":"x","sources":[{"source":"dht","seeders":1}]}`))
+
+	waitForLockWaits(t, db, 1, "the import should wait on the paused source key")
+
+	scheduler := holdRow(t, db, `INSERT INTO enhancement_claims (info_hash,token,expires_at)
+VALUES ($1,'claim',now() + interval '1 hour')`, hash[:])
+
+	updated := make(chan error, 1)
+
+	go func() {
+		_, err := scheduler.Exec(
+			t.Context(),
+			`UPDATE torrents SET enhancement_ready=false,enhancement_checked_at=now() WHERE info_hash=$1`,
+			hash[:],
+		)
+		updated <- err
+	}()
+
+	select {
+	case err := <-updated:
+		require.NoError(t, err)
+	case <-time.After(500 * time.Millisecond):
+		// Waiting on the import: release it, and let the deadlock, if any, be detected.
+		require.NoError(t, pause.Rollback(t.Context()))
+		require.NoError(t, <-updated, "the scheduler's update must not deadlock with the import")
+	}
+
+	_ = pause.Rollback(t.Context())
+
+	require.NoError(t, scheduler.Commit(t.Context()))
+
+	select {
+	case result := <-done:
+		require.NoError(t, result.err)
+		require.Equal(t, 1, result.report.Updated)
+	case <-time.After(5 * time.Second):
+		t.Fatal("the import did not finish")
+	}
+}
+
+// Writers that take no moderation lock, such as the classifier deleting torrents or the
+// enhancement scheduler's maintenance, lock torrents in their own order, so a deadlock with
+// an import can still happen. PostgreSQL then aborts one transaction; when that is the
+// import's batch, the batch is retried rather than failing a long import.
+func TestExchangeImportRetriesABatchAbortedByADeadlock(t *testing.T) {
+	t.Parallel()
+
+	db := dbtest.New(t)
+	hash := protocol.ID{1}
+	seedTorrent(t, db, hash, "Contended", 10, false, "no_info")
+
+	// The import locks the torrent, then waits on this uncommitted source key.
+	other := holdRow(t, db, `INSERT INTO torrent_sources (key,name,created_at,updated_at)
+VALUES ('alice:dht','alice:dht',now(),now())`)
+
+	done := startImport(t.Context(), db, exchangeFile(
+		`{"infoHash":"`+hashHex(1)+`","name":"x","sources":[{"source":"dht","seeders":7}]}`))
+
+	waitForLockWaits(t, db, 1, "the import should wait on the uncommitted source key")
+
+	// Now the other transaction waits on the import's lock on the torrent: a cycle. The
+	// import has waited longer, so its backend detects the deadlock and aborts itself.
+	locked := make(chan error, 1)
+
+	go func() {
+		_, err := other.Exec(t.Context(), `SELECT 1 FROM torrents WHERE info_hash = $1 FOR UPDATE`, hash[:])
+		locked <- err
+	}()
+
+	select {
+	case err := <-locked:
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("the other transaction never got its lock")
+	}
+
+	require.NoError(t, other.Rollback(t.Context()))
+
+	select {
+	case result := <-done:
+		require.NoError(t, result.err, "a batch aborted by a deadlock is retried")
+		require.Equal(t, 1, result.report.Updated)
+	case <-time.After(5 * time.Second):
+		t.Fatal("the import did not finish")
+	}
+
+	require.Equal(t, map[string]sourceRow{"alice:dht": {Seeders: ptr(7)}}, sourceRows(t, db, hash))
 }

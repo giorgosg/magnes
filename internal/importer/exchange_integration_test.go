@@ -431,8 +431,8 @@ func TestExchangeImportStoresANewTorrentsFiles(t *testing.T) {
 		"an empty list is no list")
 }
 
-// A complete incoming list fills a local list that is unknown or partial, and never
-// replaces a complete one; a partial incoming list fills nothing.
+// A complete incoming list replaces a local list that is unknown or partial, and never a
+// complete one; a partial incoming list fills nothing.
 func TestExchangeImportFillsOnlyUnknownOrPartialLocalFiles(t *testing.T) {
 	t.Parallel()
 
@@ -465,8 +465,8 @@ VALUES ($1,0,'local',10,now(),now())`, complete[:])
 	require.Equal(t, []string{"0:a:4", "1:b:6"}, filePaths(t, db, noInfo))
 	require.Equal(t, torrentRow{Name: "Partial", Size: 10, FilesStatus: "multi", FilesCount: ptr(2)},
 		torrentRowOf(t, db, partial))
-	require.Equal(t, []string{"0:local-a:4", "1:b:6"}, filePaths(t, db, partial),
-		"a stored entry is kept; the list is completed around it")
+	require.Equal(t, []string{"0:a:4", "1:b:6"}, filePaths(t, db, partial),
+		"a filled list is the incoming list, not a mix of it and the partial one")
 	require.Equal(t, torrentRow{Name: "Complete", Size: 10, FilesStatus: "multi", FilesCount: ptr(1)},
 		torrentRowOf(t, db, complete))
 	require.Equal(t, []string{"0:local:10"}, filePaths(t, db, complete))

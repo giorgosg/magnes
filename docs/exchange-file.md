@@ -302,8 +302,8 @@ once the export has succeeded, so a failed export leaves any previous file intac
     Padding entries (`.pad/…`) are not stored.
   - A single entry named after the torrent is stored as a single-file torrent.
   - A partial list is stored, marked partial. An empty list counts as unknown.
-- **Files of an existing torrent** are filled only from a complete list, and only when the
-  local list is unknown or partial. A stored entry with the same index or path is kept.
+- **Files of an existing torrent** are taken only from a complete list, and only when the
+  local list is unknown or partial. The incoming list then replaces a partial one.
 - **Peer counts** merge within one stored source:
   - Dated counts replace the stored ones when the stored `scrapedAt` is unknown or older,
     and their `scrapedAt` is stored with them.

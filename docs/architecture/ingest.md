@@ -138,10 +138,14 @@ The other writer to the catalogue is the exchange-file import, `ExchangeImporter
   - A file list is taken only `WHERE files_status IN ('no_info', 'over_threshold')`.
   - Peer counts merge inside the upsert.
   - Name, size and private are written only by the insert of a new torrent.
-- **The batch's torrents are locked first, in infohash order.** The first statement
-  inserts the new torrents. It also locks the existing ones, through
-  `ON CONFLICT DO UPDATE … WHERE false`. A delete in flight is waited for, so no foreign
-  key can fail later in the batch.
+- **The batch's torrents are locked first, in infohash order,** as the crawler's source
+  write does. The first statement inserts the new torrents, `ON CONFLICT DO NOTHING`.
+  The second takes `FOR KEY SHARE` on all of them, so a delete in flight is waited for
+  and its torrent skipped, and no foreign key fails later in the batch.
+  - It must not take a stronger lock. The source write fires `enhancement_source_rank`,
+    which takes `FOR UPDATE`. An import that already held `NO KEY UPDATE` would deadlock
+    with the enhancement scheduler's claim: the claim holds `KEY SHARE`, then waits to
+    update the torrent.
 - **Cancellation** cancels the batch's queries. pgx closes the connection, the backend
   rolls back, and the import returns at once. Reading runs on its own goroutine, so an
   import stalled on its input still stops.

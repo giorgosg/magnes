@@ -42,7 +42,8 @@ type ExchangeOptions struct {
 }
 
 // ExchangeImporter reads exchange files into the catalogue under the merge rules in
-// docs/exchange-file.md. It is the one import code path; the CLI and HTTP fronts call it.
+// docs/exchange-file.md. It is the one import code path: the CLI calls it, and the HTTP
+// endpoint is to call it once it reads exchange files.
 type ExchangeImporter struct {
 	db            *gorm.DB
 	keywordPolicy *moderation.KeywordPolicy
@@ -70,8 +71,8 @@ type ExchangeReport struct {
 	New, Updated, Unchanged int
 	// Banned counts records refused by moderation.
 	Banned int
-	// Skipped counts records that could not be written because a value is too large for
-	// its column.
+	// Skipped counts records that could not be written for another reason: a value too
+	// large for its column, or a torrent deleted between the batch's insert and its lock.
 	Skipped int
 	// HintsWritten counts hints created or replaced. HintsKept counts incoming
 	// classifications that lost to an existing hint.

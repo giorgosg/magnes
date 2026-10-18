@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"slices"
@@ -16,12 +17,15 @@ import (
 	"github.com/bitmagnet-io/bitmagnet/internal/moderation"
 	"github.com/bitmagnet-io/bitmagnet/internal/processor"
 	"github.com/bitmagnet-io/bitmagnet/internal/protocol"
+	"github.com/jackc/pgx/v5/pgconn"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
 
 // recordPlan is one record translated into the rows it may write. Which of them are
 // written is decided in SQL, against what the catalogue holds when the batch commits.
+// Nullable values are pointers rather than the model's Null types because they travel as
+// elements of PostgreSQL arrays, which pgx encodes from slices of pointers.
 type recordPlan struct {
 	hash    protocol.ID
 	name    string
@@ -285,15 +289,19 @@ func peerCount(v model.Maybe[uint]) (*int32, bool) {
 	return &n, true
 }
 
-// writeBatch writes one batch in one transaction. Moderation runs first, as it does for
-// the crawler: keyword matches are recorded, and the batch is written inside the ledger's
-// transaction, which holds the moderation lock of every infohash in it until commit. The
-// crawler takes the same locks, so the two never write one torrent at the same time; the
-// merge rules are still enforced in SQL, so they hold against any other writer too.
+// maxBatchAttempts bounds how often a batch aborted by a deadlock or a serialization
+// failure is written again.
+const maxBatchAttempts = 3
+
+// writeBatch plans a batch once and commits it, retrying the transaction when PostgreSQL
+// aborted it to break a deadlock. Writers that take no moderation lock, such as the
+// classifier's deletes and the enhancement scheduler's maintenance, lock torrents in their
+// own order, and one lost batch must not end a long import. A retry is safe: an aborted
+// batch wrote nothing, and the merge rules make writing it again idempotent.
 func (i *ExchangeImporter) writeBatch(
 	ctx context.Context, records []exchange.Record, options ExchangeOptions, d drops,
 ) (batchResult, error) {
-	var result batchResult
+	var planned batchResult
 
 	plans := make([]recordPlan, 0, len(records))
 	evidence := make([]moderation.Evidence, 0, len(records))
@@ -301,7 +309,7 @@ func (i *ExchangeImporter) writeBatch(
 	for _, record := range records {
 		p, ok := i.plan(record, options, d)
 		if !ok {
-			result.skipped++
+			planned.skipped++
 			continue
 		}
 
@@ -310,9 +318,41 @@ func (i *ExchangeImporter) writeBatch(
 	}
 
 	if len(plans) == 0 {
-		return result, nil
+		return planned, nil
 	}
 
+	for attempt := 1; ; attempt++ {
+		result, err := i.commitBatch(ctx, plans, evidence, options, planned)
+		if err == nil || attempt == maxBatchAttempts || ctx.Err() != nil || !retryable(err) {
+			return result, err
+		}
+	}
+}
+
+// retryable reports whether PostgreSQL aborted the transaction to resolve a deadlock or a
+// serialization conflict, so that running it again can succeed.
+func retryable(err error) bool {
+	var pgErr *pgconn.PgError
+
+	return errors.As(err, &pgErr) &&
+		(pgErr.Code == sqlstateDeadlockDetected || pgErr.Code == sqlstateSerializationFailure)
+}
+
+// SQLSTATEs of a transaction aborted to resolve a conflict.
+const (
+	sqlstateDeadlockDetected     = "40P01"
+	sqlstateSerializationFailure = "40001"
+)
+
+// commitBatch writes one batch in one transaction. Moderation runs first, as it does for
+// the crawler: keyword matches are recorded, and the batch is written inside the ledger's
+// transaction, which holds the moderation lock of every infohash in it until commit. The
+// crawler takes the same locks, so the two never write one torrent at the same time; the
+// merge rules are still enforced in SQL, so they hold against any other writer too.
+func (i *ExchangeImporter) commitBatch(
+	ctx context.Context, plans []recordPlan, evidence []moderation.Evidence, options ExchangeOptions,
+	result batchResult,
+) (batchResult, error) {
 	ledger := moderation.NewService(i.db)
 	for _, observed := range evidence {
 		if _, err := i.keywordPolicy.Apply(ctx, ledger, observed); err != nil {
@@ -407,10 +447,27 @@ func (w batchWriter) write(plans []recordPlan, options ExchangeOptions, result *
 		func(a, b recordPlan) int { return bytes.Compare(a.hash[:], b.hash[:]) },
 	)
 
-	created, err := w.insertOrLockTorrents(plans)
+	created, err := w.insertTorrents(plans)
 	if err != nil {
 		return err
 	}
+
+	present, err := w.lockTorrents(plans)
+	if err != nil {
+		return err
+	}
+
+	kept := plans[:0]
+
+	for _, p := range plans {
+		if present.has(p.hash) {
+			kept = append(kept, p)
+		} else {
+			result.skipped++
+		}
+	}
+
+	plans = kept
 
 	changed := make(hashSet)
 
@@ -478,17 +535,14 @@ func (w batchWriter) write(plans []recordPlan, options ExchangeOptions, result *
 	return w.queueClassification(queued)
 }
 
-// insertOrLockTorrents creates the torrents the catalogue does not have, returns them, and
-// locks the ones it has until commit. Name, size and private are written only here: for a
-// torrent that exists, local wins.
+// insertTorrents creates the torrents the catalogue does not have, and returns them. Name,
+// size and private are written only here: for a torrent that exists, local wins.
 //
-// The update never happens, but ON CONFLICT DO UPDATE locks every conflicting row even
-// when its WHERE is false, so once this statement returns every torrent in the batch
-// exists and cannot be deleted under the rest of the batch, whose foreign keys would
-// otherwise roll the whole batch back. A delete in flight is waited for, and its torrent is
-// then created afresh. The lock is FOR NO KEY UPDATE, the one the source-rank trigger
-// takes anyway, and rows are locked in infohash order.
-func (w batchWriter) insertOrLockTorrents(plans []recordPlan) (hashSet, error) {
+// It takes no lock on a torrent that exists. Holding NO KEY UPDATE from here, as
+// ON CONFLICT DO UPDATE would, deadlocks with the enhancement scheduler: its claim takes
+// KEY SHARE and then waits to update the torrent, while the source write below needs
+// FOR UPDATE for the enhancement_source_rank trigger.
+func (w batchWriter) insertTorrents(plans []recordPlan) (hashSet, error) {
 	var (
 		hashes   = make([][]byte, len(plans))
 		names    = make([]string, len(plans))
@@ -503,13 +557,13 @@ func (w batchWriter) insertOrLockTorrents(plans []recordPlan) (hashSet, error) {
 		statuses[j], counts[j] = string(p.filesStatus), p.filesCount
 	}
 
-	created, _, err := w.returning(`INSERT INTO torrents AS t
+	created, _, err := w.returning(`INSERT INTO torrents
  (info_hash, name, size, private, files_status, files_count, created_at, updated_at)
 SELECT u.info_hash, u.name, u.size, u.private, u.files_status::"FilesStatus", u.files_count, now(), now()
 FROM unnest($1::bytea[], $2::text[], $3::bigint[], $4::boolean[], $5::text[], $6::integer[])
  AS u(info_hash, name, size, private, files_status, files_count)
 ORDER BY u.info_hash
-ON CONFLICT (info_hash) DO UPDATE SET name = t.name WHERE false
+ON CONFLICT (info_hash) DO NOTHING
 RETURNING info_hash`, hashes, names, sizes, private, statuses, counts)
 	if err != nil {
 		return nil, fmt.Errorf("insert torrents: %w", err)
@@ -518,10 +572,31 @@ RETURNING info_hash`, hashes, names, sizes, private, statuses, counts)
 	return created, nil
 }
 
+// lockTorrents returns the batch's torrents that still exist, and holds them against
+// deletion until commit, as the crawler's source write does. A torrent deleted since the
+// insert would otherwise fail a foreign key and roll back the whole batch. KEY SHARE is
+// the lock that check takes anyway: it does not hold off an update, and taking it first, in
+// infohash order, means a delete in flight is waited for and then skipped.
+func (w batchWriter) lockTorrents(plans []recordPlan) (hashSet, error) {
+	hashes := make([][]byte, len(plans))
+	for j, p := range plans {
+		hashes[j] = p.hash.Bytes()
+	}
+
+	present, _, err := w.returning(`SELECT info_hash FROM torrents WHERE info_hash = ANY($1)
+ORDER BY info_hash FOR KEY SHARE`, hashes)
+	if err != nil {
+		return nil, fmt.Errorf("lock torrents: %w", err)
+	}
+
+	return present, nil
+}
+
 // fillFiles takes a complete incoming list for a torrent that existed before this batch,
 // when its own list is unknown or partial, and returns the torrents it took one for. The
 // condition is part of the update, so a crawler write that completed the list first
-// wins.
+// wins. The partial rows of a torrent it took a list for are deleted, so that the stored
+// list is the incoming one rather than a mix that a status of complete would misdescribe.
 func (w batchWriter) fillFiles(plans []recordPlan, created hashSet) (hashSet, error) {
 	var (
 		hashes   [][]byte
@@ -552,12 +627,25 @@ RETURNING t.info_hash`, hashes, statuses, counts)
 		return nil, fmt.Errorf("fill files: %w", err)
 	}
 
+	if len(filled) == 0 {
+		return filled, nil
+	}
+
+	replaced := make([][]byte, 0, len(filled))
+	for hash := range filled {
+		replaced = append(replaced, hash.Bytes())
+	}
+
+	if _, err := w.conn.ExecContext(w.ctx, `DELETE FROM torrent_files WHERE info_hash = ANY($1)`,
+		replaced); err != nil {
+		return nil, fmt.Errorf("replace partial files: %w", err)
+	}
+
 	return filled, nil
 }
 
 // insertFiles writes the file rows of new torrents and of torrents whose list was just
-// filled. A stored row with the same index or path is kept, so a partial local list is
-// completed around what it already holds.
+// filled. A repeated index or path in the incoming list is stored once.
 func (w batchWriter) insertFiles(plans []recordPlan, created, filled hashSet) (hashSet, error) {
 	var (
 		hashes  [][]byte

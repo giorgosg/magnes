@@ -103,7 +103,7 @@ The exchange-file `export` command reads through the same `VisibleInfoHash` rule
 
 Goose SQL in [`migrations/`](../../migrations), embedded and run through
 `internal/database/migrations` — an fx decorator, so they apply before anything queries.
-Current high-water mark is `00029_enhancement_scheduling.sql`; `ls migrations/` rather than trusting this
+Current high-water mark is `00030_source_scraped_at.sql`; `ls migrations/` rather than trusting this
 sentence.
 
 **Forks number theirs independently and the numbers collide.** Anything cherry-picked gets
@@ -168,6 +168,10 @@ or populating a queue. This is an upgrade cost: stop catalogue writers and budge
 space/time for three index builds and torrent updates. Source changes subsequently
 recompute only that infohash's maximum. GORM generation excludes the operational
 columns, preventing generic upserts from resetting them.
+
+Migration `00030` adds a nullable `scraped_at` to `torrents_torrent_sources`: when the row's
+peer counts were observed. It is a catalogue-only change with no backfill, so existing counts
+stay undated until they are scraped again, and the upgrade costs no table rewrite.
 
 `enhancement_claims` contains active leases only. `enhancement_daily_spending` stores
 UTC-day totals; `enhancement_reservations` stores expiring live per-request reservation tokens

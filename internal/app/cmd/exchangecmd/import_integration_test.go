@@ -34,7 +34,22 @@ type importRun struct {
 func runImport(t *testing.T, db *dbtest.DB, lifecycle *fxtest.Lifecycle, stdin io.Reader, args ...string) importRun {
 	t.Helper()
 
+	return runImportTo(t, db, lifecycle, stdin, nil, args...)
+}
+
+// runImportTo is runImport with the report written to stdout instead of captured, when
+// stdout is not nil.
+func runImportTo(
+	t *testing.T, db *dbtest.DB, lifecycle *fxtest.Lifecycle, stdin io.Reader, stdout io.Writer, args ...string,
+) importRun {
+	t.Helper()
+
 	var out, errOut bytes.Buffer
+
+	var writer io.Writer = &out
+	if stdout != nil {
+		writer = stdout
+	}
 
 	run := importRun{exitCode: -1}
 	command := exchangecmd.NewImport(exchangecmd.ImportParams{
@@ -59,7 +74,7 @@ func runImport(t *testing.T, db *dbtest.DB, lifecycle *fxtest.Lifecycle, stdin i
 		Name:      "bitmagnet",
 		Commands:  []*cli.Command{command},
 		Reader:    stdin,
-		Writer:    &out,
+		Writer:    writer,
 		ErrWriter: &errOut,
 		ExitErrHandler: func(_ *cli.Context, err error) {
 			var coder cli.ExitCoder
@@ -197,4 +212,21 @@ func TestImportStopsWhenTheApplicationStops(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("the application's stop waited forever on the import")
 	}
+}
+
+type brokenWriter struct{}
+
+func (brokenWriter) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
+
+// A report that cannot be written, such as to a closed pipe, is a failure: the exit code
+// must not say the import succeeded unseen.
+func TestImportFailsWhenItsReportCannotBeWritten(t *testing.T) {
+	t.Parallel()
+
+	db := dbtest.New(t)
+
+	run := runImportTo(t, db, fxtest.NewLifecycle(t), strings.NewReader(importHeader+"\n"), brokenWriter{},
+		"--origin", "alice", "-")
+	assert.Equal(t, 1, run.exitCode)
+	assert.Contains(t, run.stderr, io.ErrClosedPipe.Error())
 }

@@ -2,8 +2,10 @@ package exchangecmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"sync"
 
@@ -82,11 +84,11 @@ func (p ImportParams) importFile(ctx context.Context, c *cli.Context) error {
 		OverwriteHints: c.Bool("overwrite-hints"),
 	})
 
-	if err := writeImportReport(c.App.Writer, report); err != nil {
-		return err
-	}
+	writeErr := writeImportReport(c.App.Writer, report)
 
 	switch {
+	case importErr == nil && writeErr != nil:
+		return cli.Exit("import: the report could not be written: "+writeErr.Error(), exitFatal)
 	case importErr == nil:
 		return nil
 	case ctx.Err() != nil:
@@ -97,43 +99,25 @@ func (p ImportParams) importFile(ctx context.Context, c *cli.Context) error {
 	}
 }
 
+// importSections are the reader's drop reasons followed by the import's own.
+var importSections = append(slices.Clip(readerSections),
+	dropSection{"invalid tags", importer.ReasonInvalidTag},
+	dropSection{"classifications without a content type", importer.ReasonNoContentType},
+	dropSection{"unknown work sources", importer.ReasonUnknownWorkSource},
+	dropSection{"values out of range", importer.ReasonOutOfRange},
+)
+
 func writeImportReport(w io.Writer, report importer.ExchangeReport) error {
 	var out strings.Builder
 
-	fmt.Fprintf(&out, "headers: %d\n", len(report.Headers))
-
-	for _, h := range report.Headers {
-		fmt.Fprintf(&out, "  line %d: %s\n", h.Line, describeHeader(h.Header))
-	}
-
-	fmt.Fprintf(&out, "records: %d\n", report.Records)
-	fmt.Fprintf(&out, "malformed lines: %d\n", len(report.Malformed))
-
-	for _, m := range report.Malformed {
-		fmt.Fprintf(&out, "  line %d: %v\n", m.Line, m.Err)
-	}
+	writeStream(&out, report.Headers, report.Records, report.Malformed)
 
 	fmt.Fprintf(&out, "torrents: new %d, updated %d, unchanged %d, banned %d, skipped %d\n",
 		report.New, report.Updated, report.Unchanged, report.Banned, report.Skipped)
 	fmt.Fprintf(&out, "hints: written %d, kept %d\n", report.HintsWritten, report.HintsKept)
 	fmt.Fprintf(&out, "tags added: %d\n", report.TagsAdded)
 
-	for _, section := range []struct {
-		title  string
-		reason exchange.Reason
-	}{
-		{"unknown fields", exchange.ReasonUnknownField},
-		{"nulls", exchange.ReasonNull},
-		{"unknown values", exchange.ReasonUnknownValue},
-		{"invalid source names", exchange.ReasonInvalidSourceName},
-		{"invalid entries", exchange.ReasonInvalidEntry},
-		{"invalid tags", importer.ReasonInvalidTag},
-		{"classifications without a content type", importer.ReasonNoContentType},
-		{"unknown work sources", importer.ReasonUnknownWorkSource},
-		{"values out of range", importer.ReasonOutOfRange},
-	} {
-		writeSection(&out, section.title, section.reason, report.Dropped)
-	}
+	writeSections(&out, importSections, report.Dropped)
 
 	_, err := io.WriteString(w, out.String())
 
@@ -201,19 +185,26 @@ func (b *shutdownBound) action(run func(context.Context, *cli.Context) error) cl
 		defer stopCancelling()
 
 		err := run(ctx, c)
-
-		// An interrupted command exits here, before releasing the stop hook: fx exits 0
-		// once its stop completes, which would otherwise race this exit code.
-		if err != nil && b.lifetime.Err() != nil {
-			if c.App.ExitErrHandler != nil {
-				c.App.ExitErrHandler(c, err)
-			} else {
-				cli.HandleExitCoder(err)
-			}
-
+		if err == nil {
 			return nil
 		}
 
-		return err
+		// A failed command exits here, before releasing the stop hook. Once shutdown has
+		// begun, fx exits 0 as soon as its stop completes, which would race an exit code
+		// handled after this returns. A failure that only looks unrelated, such as the pool
+		// closing, can arrive just before the stop hook cancels the context. Only an
+		// ExitCoder sets an exit code, so any other error becomes one.
+		var coder cli.ExitCoder
+		if !errors.As(err, &coder) {
+			err = cli.Exit(err.Error(), exitFatal)
+		}
+
+		if c.App.ExitErrHandler != nil {
+			c.App.ExitErrHandler(c, err)
+		} else {
+			cli.HandleExitCoder(err)
+		}
+
+		return nil
 	}
 }
