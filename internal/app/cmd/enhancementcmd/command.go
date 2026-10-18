@@ -82,6 +82,21 @@ func New(p Params) Result {
 							Name: "thinking", Value: p.Config.Thinking,
 						},
 						&cli.StringFlag{
+							Name:  "reasoning-effort",
+							Value: p.Config.ReasoningEffort,
+							Usage: "low, high or max; empty leaves the provider default",
+						},
+						&cli.StringFlag{
+							Name:  "reasoning-parameter",
+							Value: p.Config.ReasoningParameter,
+							Usage: "thinking (DeepSeek API) or reasoning (OpenRouter)",
+						},
+						&cli.StringSliceFlag{
+							Name:  "provider-order",
+							Value: cli.NewStringSlice(p.Config.ProviderOrder...),
+							Usage: "OpenRouter provider slug to pin, without fallbacks; repeatable",
+						},
+						&cli.StringFlag{
 							Name:  "output-token-parameter",
 							Value: p.Config.OutputTokenParameter,
 						},
@@ -284,6 +299,9 @@ func run(parent context.Context, c *cli.Context, p Params) error {
 	}
 
 	cfg.Thinking = c.String("thinking")
+	cfg.ReasoningEffort = c.String("reasoning-effort")
+	cfg.ReasoningParameter = c.String("reasoning-parameter")
+	cfg.ProviderOrder = c.StringSlice("provider-order")
 	cfg.OutputTokenParameter = c.String("output-token-parameter")
 	cfg.Temperature = c.Float64("temperature")
 	cfg.Concurrency = c.Int("concurrency")

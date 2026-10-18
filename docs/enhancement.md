@@ -38,9 +38,29 @@ Both spellings must bound all billed output, including reasoning, for the chosen
 provider/model. There is no automatic parameter retry or fallback.
 Provider incompatibility is reported as a failure. Compatible reasoning replay fields
 remain in memory only for the bounded conversation and are not returned in reports.
-For providers supporting `thinking.type`, `--thinking disabled` or `--thinking enabled`
-sets that generation option explicitly; the default omits it. OpenAI-compatible
-providers vary in these extensions, so choose the option their API documents.
+`--thinking disabled` or `--thinking enabled` sets reasoning explicitly; the default
+omits it. `--reasoning-effort low`, `high` or `max` requests an effort and cannot be
+combined with `--thinking disabled`. `--reasoning-parameter` says how both are sent:
+`thinking` (the default, DeepSeek's API) sends `thinking.type` and `reasoning_effort`;
+`reasoning` (OpenRouter) sends its normalized `reasoning` object, `enabled` or `effort`.
+OpenRouter ignores DeepSeek's `thinking` field, so through OpenRouter use `reasoning`.
+OpenRouter's `reasoning_details` are replayed on later turns like `reasoning_content`.
+
+On OpenRouter, repeat `--provider-order` (setting `provider_order`) to pin providers by
+slug, for example `deepseek`. Requests then forbid fallbacks and require every sent
+parameter to be supported. Without it OpenRouter chooses among all hosts of the model,
+and hosts of the same model ID can answer quite differently. Effort, the reasoning
+parameter and the provider order are part of the recipe.
+
+For DeepSeek through OpenRouter:
+
+```bash
+bitmagnet enhancement evaluate --sample 10 --base-url https://openrouter.ai/api/v1 \
+  --model deepseek/deepseek-v4.1-flash --api-key-env OPENROUTER_API_KEY \
+  --output-token-parameter max_tokens --reasoning-parameter reasoning --thinking disabled \
+  --provider-order deepseek --run-max-cost 0.05 \
+  --input-cost-per-million 0.3 --output-cost-per-million 1.2
+```
 
 Repeat `--hash` for explicit selections, or use `--sample 10` for a deterministic
 sample ordered by infohash. Choose one selection mode, with at most 100 torrents.
@@ -73,8 +93,9 @@ usual snake-case configuration names. Defaults are:
 
 CLI run-limit flags use `--run-max-requests`, `--run-max-output-tokens`,
 `--run-timeout`, and `--run-max-cost`; evaluation flags use the corresponding
-hyphenated setting names. `base_url`, `api_key`, `model`, `temperature`, `prompt`
-and `tags` configure the provider, additional instructions and tag whitelist.
+hyphenated setting names. `base_url`, `api_key`, `model`, `temperature`, `thinking`,
+`reasoning_effort`, `reasoning_parameter`, `provider_order`, `prompt` and `tags`
+configure the provider, reasoning, routing, additional instructions and tag whitelist.
 By default the whitelist permits `llm-platform-windows`, `llm-platform-linux`,
 `llm-platform-macos`, `llm-platform-android`, `llm-platform-ios`,
 `llm-edition-deluxe`, and `llm-edition-collectors`. Tags must use lowercase

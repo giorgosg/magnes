@@ -53,11 +53,13 @@ type toolCall struct {
 	} `json:"function"`
 }
 type message struct {
-	ReasoningContent *string    `json:"reasoning_content,omitempty"`
-	Role             string     `json:"role"`
-	Content          string     `json:"content,omitempty"`
-	ToolCalls        []toolCall `json:"tool_calls,omitempty"`
-	ToolCallID       string     `json:"tool_call_id,omitempty"`
+	ReasoningContent *string `json:"reasoning_content,omitempty"`
+	// OpenRouter's reasoning blocks, returned verbatim on later turns as it recommends.
+	ReasoningDetails json.RawMessage `json:"reasoning_details,omitempty"`
+	Role             string          `json:"role"`
+	Content          string          `json:"content,omitempty"`
+	ToolCalls        []toolCall      `json:"tool_calls,omitempty"`
+	ToolCallID       string          `json:"tool_call_id,omitempty"`
 }
 
 var errMalformedEnvelope = errors.New("invalid model response envelope")
@@ -181,8 +183,14 @@ func (e *Evaluator) Evaluate(parent context.Context, evidence Evidence) (result 
 			e.config.OutputTokenParameter: remaining,
 		}
 
-		if e.config.Thinking != "" {
-			payload["thinking"] = map[string]string{"type": e.config.Thinking}
+		addReasoning(payload, e.config)
+
+		if len(e.config.ProviderOrder) > 0 {
+			payload["provider"] = map[string]any{
+				"order":              e.config.ProviderOrder,
+				"allow_fallbacks":    false,
+				"require_parameters": true,
+			}
 		}
 
 		body, marshalErr := json.Marshal(payload)
@@ -650,6 +658,28 @@ func (e *Evaluator) search(ctx context.Context, call toolCall) ([]Candidate, err
 	}
 
 	return found, nil
+}
+
+// addReasoning expresses thinking and effort in the configured provider's own field.
+func addReasoning(payload map[string]any, c Config) {
+	if c.ReasoningParameter == reasoningOpenRouter {
+		switch {
+		case c.ReasoningEffort != "":
+			payload[reasoningOpenRouter] = map[string]string{"effort": c.ReasoningEffort}
+		case c.Thinking != "":
+			payload[reasoningOpenRouter] = map[string]bool{"enabled": c.Thinking == thinkingEnabled}
+		}
+
+		return
+	}
+
+	if c.Thinking != "" {
+		payload[reasoningNative] = map[string]string{"type": c.Thinking}
+	}
+
+	if c.ReasoningEffort != "" {
+		payload["reasoning_effort"] = c.ReasoningEffort
+	}
 }
 
 // distinct omits an original title that only repeats the title.

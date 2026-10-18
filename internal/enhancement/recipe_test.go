@@ -70,3 +70,35 @@ func TestInputFingerprintTracksEvidenceWithoutIncidentalMetadata(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEqual(t, before, after)
 }
+
+func TestReasoningAndRoutingSettingsEnterRecipeOnlyWhenSet(t *testing.T) {
+	t.Parallel()
+
+	c := NewDefaultConfig()
+	c.BaseURL = "https://example.invalid/v1"
+	c.Model = "test"
+	base, canonical, err := Recipe(c, "rules-v1")
+	require.NoError(t, err)
+
+	for _, key := range []string{"reasoningEffort", "reasoningParameter", "providerOrder"} {
+		require.NotContains(t, canonical, key, "defaults keep existing fingerprints")
+	}
+
+	unset := c
+	unset.ReasoningParameter = ""
+	same, _, err := Recipe(unset, "rules-v1")
+	require.NoError(t, err)
+	require.Equal(t, base, same, "unset and explicit native parameters are one recipe")
+
+	for name, change := range map[string]func(*Config){
+		"effort":    func(c *Config) { c.ReasoningEffort = "low" },
+		"parameter": func(c *Config) { c.ReasoningParameter = "reasoning" },
+		"provider":  func(c *Config) { c.ProviderOrder = []string{"deepseek"} },
+	} {
+		changed := c
+		change(&changed)
+		after, _, err := Recipe(changed, "rules-v1")
+		require.NoError(t, err)
+		require.NotEqual(t, base, after, name)
+	}
+}

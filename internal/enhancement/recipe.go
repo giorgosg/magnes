@@ -30,6 +30,9 @@ func Recipe(c Config, workflow string) (recipeFingerprint, canonical string, err
 		Model               string   `json:"model"`
 		Temperature         float64  `json:"temperature"`
 		Thinking            string   `json:"thinking"`
+		ReasoningEffort     string   `json:"reasoningEffort,omitempty"`
+		ReasoningParameter  string   `json:"reasoningParameter,omitempty"`
+		ProviderOrder       []string `json:"providerOrder,omitempty"`
 		Prompt              string   `json:"prompt"`
 		Tags                []string `json:"tags"`
 		OutputParameter     string   `json:"outputParameter"`
@@ -41,6 +44,9 @@ func Recipe(c Config, workflow string) (recipeFingerprint, canonical string, err
 		Model:               c.Model,
 		Temperature:         c.Temperature,
 		Thinking:            c.Thinking,
+		ReasoningEffort:     c.ReasoningEffort,
+		ReasoningParameter:  nonDefault(c.ReasoningParameter),
+		ProviderOrder:       c.ProviderOrder,
 		Prompt:              c.Prompt,
 		Tags:                tags,
 		OutputParameter:     c.OutputTokenParameter,
@@ -51,6 +57,16 @@ func Recipe(c Config, workflow string) (recipeFingerprint, canonical string, err
 	}
 
 	return fingerprint(data), string(data), nil
+}
+
+// nonDefault leaves the native reasoning parameter, explicit or empty, out of the recipe
+// so existing fingerprints stay stable.
+func nonDefault(parameter string) string {
+	if parameter == reasoningNative {
+		return ""
+	}
+
+	return parameter
 }
 
 func fingerprint(data []byte) string {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"math"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -19,6 +20,9 @@ type Config struct {
 	Model                string
 	Temperature          float64
 	Thinking             string
+	ReasoningEffort      string
+	ReasoningParameter   string
+	ProviderOrder        []string
 	Prompt               string
 	Tags                 []string
 	Concurrency          int
@@ -36,6 +40,17 @@ type Config struct {
 	OutputCostPerMillion float64
 }
 
+const (
+	thinkingEnabled  = "enabled"
+	thinkingDisabled = "disabled"
+	// reasoningNative is DeepSeek's own API field; reasoningOpenRouter is OpenRouter's.
+	reasoningNative     = "thinking"
+	reasoningOpenRouter = "reasoning"
+)
+
+// providerPattern accepts OpenRouter provider slugs such as deepseek or open-inference/fp4.
+var providerPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9./-]{0,63}$`)
+
 func NewDefaultConfig() Config {
 	return Config{
 		Concurrency:          2,
@@ -47,6 +62,7 @@ func NewDefaultConfig() Config {
 		MaxOutputTokens:      8000,
 		RequestOutputTokens:  2000,
 		OutputTokenParameter: "max_completion_tokens",
+		ReasoningParameter:   reasoningNative,
 		MaxRunRequests:       40,
 		MaxRunOutputTokens:   80000,
 		RunTimeout:           10 * time.Minute,
@@ -71,8 +87,28 @@ func (c Config) Validate() error {
 		)
 	}
 
-	if c.Thinking != "" && c.Thinking != "enabled" && c.Thinking != "disabled" {
+	if c.Thinking != "" && c.Thinking != thinkingEnabled && c.Thinking != thinkingDisabled {
 		return errors.New("thinking must be empty, enabled or disabled")
+	}
+
+	if c.ReasoningParameter != "" && c.ReasoningParameter != reasoningNative &&
+		c.ReasoningParameter != reasoningOpenRouter {
+		return errors.New("reasoning parameter must be empty, thinking or reasoning")
+	}
+
+	if c.ReasoningEffort != "" && c.ReasoningEffort != "low" && c.ReasoningEffort != "high" &&
+		c.ReasoningEffort != "max" {
+		return errors.New("reasoning effort must be empty, low, high or max")
+	}
+
+	if c.ReasoningEffort != "" && c.Thinking == thinkingDisabled {
+		return errors.New("reasoning effort requires thinking to be enabled or unset")
+	}
+
+	for _, provider := range c.ProviderOrder {
+		if !providerPattern.MatchString(provider) {
+			return errors.New("invalid provider in provider order")
+		}
 	}
 
 	if c.OutputTokenParameter != "max_completion_tokens" && c.OutputTokenParameter != "max_tokens" {
