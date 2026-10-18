@@ -68,3 +68,13 @@ A torrent discovered by this instance within the previous seven days.
 **Read-only evaluation**:
 An evaluation that returns its results for inspection without changing the catalogue
 or retaining evaluation state. It can be repeated to compare classification recipes.
+
+**Catalogue export**:
+A copy of an instance's ordinary catalogue that restores only into the same version of
+the software. It is for backup and migration, not for sharing.
+_Avoid_: Exchange file, backup when meaning a full database backup
+
+**Exchange file**:
+A versioned, self-describing stream of torrent records that other instances and other
+programs can read, whatever version produced it. It is for sharing an index.
+_Avoid_: Export, dump, backup
