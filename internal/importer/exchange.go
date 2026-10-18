@@ -327,7 +327,8 @@ func (d *drops) check() error {
 
 // trim keeps a report that stopped at the limit within it. The reader and the import each
 // keep within the limit, so together they can pass it by up to one batch before the
-// import stops; the entries past it are left out, newest kinds first.
+// import stops; the entries past it are cut from the end of each list, dropped entries
+// first, then malformed lines, then headers.
 func (r *ExchangeReport) trim(limit int) {
 	over := len(r.Headers) + len(r.Malformed) + len(r.Dropped) - limit
 	if limit <= 0 || over <= 0 {

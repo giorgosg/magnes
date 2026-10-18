@@ -50,7 +50,8 @@ func TestImportRefusesALineLongerThanTheLimit(t *testing.T) {
 }
 
 // More distinct reported entries than the endpoint's limit stop the import with 413, and
-// the report it answers with stays within the limit.
+// the report it answers with stays within the limit. As for any fatal stream error, the
+// records before the line that crossed it are written.
 func TestImportRefusesMoreDistinctReportedEntriesThanTheLimit(t *testing.T) {
 	t.Parallel()
 
@@ -63,17 +64,19 @@ func TestImportRefusesMoreDistinctReportedEntriesThanTheLimit(t *testing.T) {
 
 	rec := post(t, newDBEngine(t, db), "/import?origin=alice", "application/x-ndjson", strings.NewReader(
 		exchangeHeader+"\n"+
+			`{"infoHash":"0000000000000000000000000000000000000002","name":"before"}`+"\n"+
 			`{"infoHash":"0000000000000000000000000000000000000001","name":"x"`+fields.String()+"}\n"))
 	require.Equal(t, http.StatusRequestEntityTooLarge, rec.Code)
 
 	report := decodeReport(t, rec)
-	assert.Contains(t, report.Error, "line 2: too much to report")
+	assert.Contains(t, report.Error, "line 3: too much to report")
 	assert.LessOrEqual(
 		t,
 		len(report.Headers)+len(report.Malformed)+len(report.Dropped),
 		httpserver.Limits.MaxReported,
 	)
-	assert.Zero(t, count(t, db, `SELECT count(*) FROM torrents`))
+	assert.Equal(t, 1, report.Torrents.New, "the record before the line that crossed the limit is written")
+	assert.Equal(t, 1, count(t, db, `SELECT count(*) FROM torrents`))
 }
 
 // Each string the report keeps is clipped.

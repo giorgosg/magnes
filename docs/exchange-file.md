@@ -411,7 +411,9 @@ server's memory:
 - **The report** may hold at most 1000 entries: headers, malformed lines and distinct
   dropped entries together, including what the import drops itself, such as invalid tags.
   Repeats of one dropped entry are counted, not listed, so only distinct entries add up.
-  One more stops the import, and the batch it was found in is not written.
+  One more stops the import. When the import's own drops cross the limit, the batch they
+  were found in is not written. When the reader's do, the records before the line that
+  crossed it are written, as for any fatal stream error.
 - **Each string the report keeps** — a path, a value, a malformed line's error or a
   header's producer — is clipped to 256 bytes and marked with `…`. So is the `error`.
 
