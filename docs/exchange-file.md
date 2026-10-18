@@ -260,6 +260,7 @@ once the export has succeeded, so a failed export leaves any previous file intac
 - `magnes.tags` is written only with `--include-tags`.
 - An internal value with no spelling in the format, or a source name that cannot be
   normalised, stops the export with an error that names the value and the torrent.
+
 ### Incremental export
 
 `bitmagnet export --since <time> [--overlap <duration>] <file|->` writes only the visible

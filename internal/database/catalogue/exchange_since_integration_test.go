@@ -102,8 +102,9 @@ func TestExchangeExportSinceWritesSinceInTheHeader(t *testing.T) {
 func TestExchangeExportSinceReReadsTheOverlap(t *testing.T) {
 	t.Parallel()
 
-	db := dbtest.New(t)
 	const overlap = time.Minute
+
+	db := dbtest.New(t)
 	atCursor, lateCommit, atWindowStart, beforeWindow := protocol.ID{1}, protocol.ID{2}, protocol.ID{3},
 		protocol.ID{4}
 
@@ -180,8 +181,7 @@ SELECT info_hash, 'movie', $1, $1 FROM torrents WHERE get_byte(info_hash, 19) % 
 
 	for i := 1; i <= torrents; i++ {
 		if b := byte(i); b%7 == 0 || b%11 == 0 || b%13 == 0 {
-			var hash protocol.ID
-			hash[18], hash[19] = byte(i>>8), b
+			hash := protocol.ID{18: byte(i >> 8), 19: b}
 			want = append(want, hash)
 		}
 	}
