@@ -89,6 +89,13 @@ is in the file's comments and is worth reading before touching it.
 torrents, so it is guarded by `http_auth.Guard` against an `import` object action. `X-Import-Id`
 names the import batch, which lands in `torrents_torrent_sources.import_id`.
 
+Re-importing a torrent that already has a row for the item's `source` updates that row
+without overwriting a known value with an unknown one: `import_id`, `seeders`, `leechers`
+and `published_at` each keep their stored value when the item leaves them out. An item
+carries no peer counts at all, so updating every column used to reset a `dht` row's
+seeders to NULL — and, through the `enhancement_source_rank` trigger, the torrent's
+enhancement rank with it. Hints are a separate upsert and still overwrite in full.
+
 It also requires `Content-Type: application/json`, answering anything else with 415 before
 reading a byte of the body. That is a CORS property rather than a parsing one: `text/plain`,
 `multipart/form-data` and `application/x-www-form-urlencoded` are the media types that make

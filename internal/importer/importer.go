@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -281,11 +282,11 @@ func (i *activeImport) persistEligibleItems(tx *dao.Query, items ...Item) error 
 			}
 		}
 
-		if createTorrentsTorrentSourcesErr := tx.TorrentsTorrentSource.WithContext(i.ctx).
-			Clauses(clause.OnConflict{
-				UpdateAll: true,
-			}).
-			CreateInBatches(torrentsTorrentSources, 100); createTorrentsTorrentSourcesErr != nil {
+		// UnderlyingDB because gorm/gen refuses any expression in an OnConflict
+		// assignment; sourceRowOnConflict is built only from constant column names.
+		if createTorrentsTorrentSourcesErr := tx.TorrentsTorrentSource.WithContext(i.ctx).UnderlyingDB().
+			Clauses(sourceRowOnConflict).
+			CreateInBatches(torrentsTorrentSources, 100).Error; createTorrentsTorrentSourcesErr != nil {
 			return createTorrentsTorrentSourcesErr
 		}
 
@@ -293,6 +294,29 @@ func (i *activeImport) persistEligibleItems(tx *dao.Query, items ...Item) error 
 		// same work, so a fingerprint collision must not roll back the import batch.
 		return tx.QueueJob.Clauses(clause.OnConflict{DoNothing: true}).Create(&job)
 	}()
+}
+
+// sourceRowOnConflict never overwrites a known value with an unknown one: an
+// Item has no peer counts, so updating every column reset a source row's known
+// seeders and leechers to NULL whenever a torrent was re-imported under it.
+var sourceRowOnConflict = clause.OnConflict{
+	Columns: []clause.Column{{Name: "source"}, {Name: "info_hash"}},
+	DoUpdates: clause.Set{
+		keepKnown("import_id"),
+		keepKnown("seeders"),
+		keepKnown("leechers"),
+		keepKnown("published_at"),
+		{Column: clause.Column{Name: "updated_at"}, Value: gorm.Expr("EXCLUDED.updated_at")},
+	},
+}
+
+func keepKnown(column string) clause.Assignment {
+	return clause.Assignment{
+		Column: clause.Column{Name: column},
+		Value: gorm.Expr(fmt.Sprintf(
+			"COALESCE(EXCLUDED.%[1]s, %[2]s.%[1]s)", column, model.TableNameTorrentsTorrentSource,
+		)),
+	}
 }
 
 func createTorrentModel(info Info, item Item) model.Torrent {
