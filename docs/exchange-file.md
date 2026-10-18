@@ -166,8 +166,8 @@ The format has its own enum vocabulary, in lowercase kebab-case:
 
 - An unknown enum value is treated as an unknown field. It is dropped, the rest of the
   record is kept, and the value is reported. A language code the reader does not support
-  is handled the same way. Magnes supports 62 ISO 639-1 codes, so a valid code outside
-  that set is also dropped and reported.
+  is handled the same way. Magnes supports a subset of ISO 639-1, so a valid code
+  outside that subset is also dropped and reported.
 - Adding a value is a minor bump. Removing or renaming one is a major bump.
 - A writer fails on an internal value that has no spelling here, rather than leak it.
 - Never included: the work's title, year or other extended work metadata, evaluation
@@ -205,11 +205,11 @@ A reader distinguishes a line it skips from an error that stops the stream.
     them affects how the file is read;
   - a `magnes` section, its `classification` or its `tags` holding a wrong JSON type
     anywhere inside, since nothing in the vendor section is needed to understand the
-    torrent;
+    torrent. The whole part is dropped, so nothing else inside it is reported;
   - a `work` missing `source` or `id`;
   - an `episodes` entry that is not exactly one of a non-empty `episodes` list or
-    `wholeSeason: true`, or that has a negative season or episode. `wholeSeason: false`
-    is the same as leaving it out.
+    `wholeSeason: true`, or that has a negative season or episode. An empty `episodes`
+    list and `wholeSeason: false` are each the same as leaving the field out.
 - Blank lines are ignored.
 
 Reports name array-index-free paths, such as `sources[].completed`.

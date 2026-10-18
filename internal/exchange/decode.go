@@ -168,20 +168,31 @@ func optionalArray[T any](
 	key string,
 	decode func(n *notes, path string, raw json.RawMessage) (T, bool, error),
 ) (model.Maybe[[]T], error) {
-	return optional(o, key, func(raw json.RawMessage) ([]T, error) {
-		return decodeArray(o.notes, joinPath(o.path, key)+"[]", raw, decode)
-	})
+	raw, ok := o.value(key)
+	if !ok {
+		return model.Maybe[[]T]{}, nil
+	}
+
+	values, err := decodeArray(o.notes, joinPath(o.path, key), raw, decode)
+	if err != nil {
+		return model.Maybe[[]T]{}, err
+	}
+
+	return model.MaybeValid(values), nil
 }
 
+// decodeArray decodes the array at field. Its errors already name their path.
 func decodeArray[T any](
 	n *notes,
-	path string,
+	field string,
 	raw json.RawMessage,
 	decode func(n *notes, path string, raw json.RawMessage) (T, bool, error),
 ) ([]T, error) {
+	path := field + "[]"
+
 	elements, err := decodeJSON[[]json.RawMessage](raw)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%s: %w", field, err)
 	}
 
 	values := make([]T, 0, len(elements))
@@ -441,7 +452,7 @@ func decodeMagnes(n *notes, raw json.RawMessage) (Magnes, error) {
 	})
 
 	m.Tags = droppable(o, "tags", func(raw json.RawMessage) ([]string, error) {
-		return decodeArray(n, "magnes.tags[]", raw, decodeElement[string])
+		return decodeArray(n, joinPath(o.path, "tags"), raw, decodeElement[string])
 	})
 
 	o.reportUnknownKeys()
@@ -589,10 +600,13 @@ func decodeSeasonEpisodes(n *notes, path string, raw json.RawMessage) (SeasonEpi
 
 	entry := SeasonEpisodes{Season: season.Val, Episodes: episodes.Val, WholeSeason: wholeSeason.Val}
 
-	// An empty episodes list is neither form, and wholeSeason: false is not the
-	// whole-season form.
-	emptyEpisodes := episodes.Valid && len(episodes.Val) == 0
-	if !season.Valid || emptyEpisodes || !entry.valid() {
+	// An empty episodes list is not the episodes form, just as wholeSeason: false is not
+	// the whole-season form.
+	if len(entry.Episodes) == 0 {
+		entry.Episodes = nil
+	}
+
+	if !season.Valid || !entry.valid() {
 		n.add(ReasonInvalidEntry, path, "")
 		return SeasonEpisodes{}, false, nil
 	}

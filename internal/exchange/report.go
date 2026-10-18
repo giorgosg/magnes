@@ -24,8 +24,10 @@ const (
 	// ReasonInvalidSourceName is a source entry whose name breaks the label rule. The
 	// entry is dropped.
 	ReasonInvalidSourceName Reason = "invalid-source-name"
-	// ReasonInvalidEntry is a vendor-section entry that breaks its shape rule, such as
-	// an episodes entry with both or neither of episodes and wholeSeason. It is dropped.
+	// ReasonInvalidEntry is something dropped because it breaks its shape rule or holds a
+	// wrong JSON type where that does not affect how the rest is read: an episodes entry
+	// with both or neither form, a work missing source or id, a mistyped header producer,
+	// exportedAt or since, or a mistyped magnes section, classification or tags.
 	ReasonInvalidEntry Reason = "invalid-entry"
 )
 

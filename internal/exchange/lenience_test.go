@@ -21,6 +21,18 @@ func TestEpisodesWithWholeSeasonFalseAreTheEpisodesForm(t *testing.T) {
 	assert.Empty(t, report)
 }
 
+// An empty episodes list is not the episodes form, just as wholeSeason: false is not the
+// whole-season form, so the entry is the whole season.
+func TestEmptyEpisodesWithWholeSeasonIsTheWholeSeasonForm(t *testing.T) {
+	t.Parallel()
+
+	rec, report := readClassification(t, `{"episodes":[{"season":1,"episodes":[],"wholeSeason":true}]}`)
+
+	assert.Equal(t, model.MaybeValid([]exchange.SeasonEpisodes{{Season: 1, WholeSeason: true}}),
+		rec.Magnes.Classification.Val.Episodes)
+	assert.Empty(t, report)
+}
+
 // Nothing in the vendor section is required to understand the torrent, so a mistyped
 // value there drops that part of the section, never the record.
 func TestMistypedVendorSectionKeepsTheRecord(t *testing.T) {

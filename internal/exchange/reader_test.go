@@ -91,6 +91,25 @@ func TestStreamRecordBeforeHeaderIsFatal(t *testing.T) {
 	require.ErrorIs(t, again, exchange.ErrRecordBeforeHeader, "a fatal error is sticky")
 }
 
+// A malformed line names the offending path once, as check prints it.
+func TestMalformedLineNamesThePathOnce(t *testing.T) {
+	t.Parallel()
+
+	input := header10 + "\n" +
+		`{"infoHash":"` + hashA + `","name":"a","files":[{"path":"x","size":1}]}` + "\n" +
+		`{"infoHash":"` + hashA + `","name":"b","files":[5]}` + "\n" +
+		`{"infoHash":"` + hashA + `","name":"c","files":{}}` + "\n"
+
+	_, malformed, _, err := readAll(t, input)
+	require.NoError(t, err)
+	require.Len(t, malformed, 3)
+
+	assert.Equal(t, "files[].index: required", malformed[0].Err.Error())
+	assert.Equal(t, "files[]: not a JSON object", malformed[1].Err.Error())
+	assert.Equal(t, "files: json: cannot unmarshal object into Go value of type []json.RawMessage",
+		malformed[2].Err.Error())
+}
+
 func TestStreamMalformedLinesAreSkippedWithTheirNumbers(t *testing.T) {
 	t.Parallel()
 
