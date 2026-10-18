@@ -381,10 +381,10 @@ func (c *rowCounter) TraceQueryEnd(_ context.Context, _ *pgx.Conn, data pgx.Trac
 	c.maxRows = max(c.maxRows, data.CommandTag.RowsAffected())
 }
 
-// Memory stays flat: the export reads the catalogue in pages, so no query ever returns
-// more than a page of rows, however large the catalogue. Each torrent has one source and
-// no files here, so every per-page query is bounded by the page size; with files, a page
-// holds up to the page size times the file-saving threshold.
+// Memory stays flat: the export reads the catalogue in pages, so in this test no query
+// returns more than a page of rows, however many torrents there are. Each torrent here
+// has one source and no files, which bounds every per-page query by the page size; with
+// files, a page holds up to the page size times the file-saving threshold.
 func TestExchangeExportPagesThroughTheCatalogue(t *testing.T) {
 	t.Parallel()
 

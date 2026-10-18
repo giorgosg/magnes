@@ -241,7 +241,7 @@ once the export has succeeded, so a failed export leaves any previous file intac
   its memory use does not grow with the catalogue.
 - It writes one header, with `producer.program` `magnes`, the build's version, and the
   snapshot's time as `exportedAt`.
-- Banned and quarantined torrents are never written. Bans travel only as the
+- Pending and banned torrents are never written. Bans travel only as the
   [ban file](moderation-ban-file.md).
 - Source names are normalised to the label rule on the way out. A stored `Torrents CSV` is
   written as `torrents-csv`.

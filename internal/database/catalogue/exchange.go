@@ -182,12 +182,13 @@ func (r exchangeReader) readTorrents(
 		record.Size = model.MaybeValid(uint64(size)) //nolint:gosec // sizes are never negative
 		record.Private = model.MaybeValid(private)
 
-		stored, err := applyFilesStatus(&record, model.FilesStatus(filesStatus))
-		if err != nil {
+		var isListed bool
+
+		if isListed, err = applyFilesStatus(&record, model.FilesStatus(filesStatus)); err != nil {
 			return nil, nil, fmt.Errorf("export torrent %s: %w", record.InfoHash, err)
 		}
 
-		if stored {
+		if isListed {
 			listed = append(listed, hash)
 		}
 
@@ -205,7 +206,7 @@ func (r exchangeReader) readTorrents(
 // whether the list is read from torrent_files. A single-file torrent has one entry built
 // from the torrent itself; a multi-file list and a partial one are read afterwards, into
 // the empty list started here.
-func applyFilesStatus(record *exchange.Record, status model.FilesStatus) (stored bool, err error) {
+func applyFilesStatus(record *exchange.Record, status model.FilesStatus) (listed bool, err error) {
 	switch status {
 	case model.FilesStatusNoInfo:
 		return false, nil
