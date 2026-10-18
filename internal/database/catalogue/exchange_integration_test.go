@@ -235,6 +235,43 @@ WHERE info_hash = $1 AND source = 'Torrents CSV'`, newer[:])
 	}}), out.records[newer].Sources, "counts travel as a pair from the newest row that has one")
 }
 
+// scraped_at dates the counts it is stored with, so it is written as scrapedAt. When two
+// names merge, the counts and their scrapedAt come together from the row scraped most
+// recently, even when another row was updated later; a row with no scraped_at loses to
+// any row that has one.
+func TestExchangeExportWritesScrapedAtWithItsCounts(t *testing.T) {
+	t.Parallel()
+
+	db := dbtest.New(t)
+	hash, merged := protocol.ID{1}, protocol.ID{2}
+	older := time.Date(2026, 10, 1, 3, 0, 0, 0, time.UTC)
+	newer := time.Date(2026, 10, 17, 3, 12, 44, 0, time.UTC)
+
+	insertTorrent(t, db, hash, "Scraped", 10, "no_info")
+	insertSource(t, db, hash, "dht", ptr(41), ptr(7), nil)
+	exec(t, db, `UPDATE torrents_torrent_sources SET scraped_at = $2 WHERE info_hash = $1`, hash[:], newer)
+
+	insertTorrent(t, db, merged, "Merged", 10, "no_info")
+	insertSource(t, db, merged, "Torrents CSV", ptr(5), ptr(2), nil)
+	insertSource(t, db, merged, "torrents-csv", ptr(9), ptr(4), nil)
+	insertSource(t, db, merged, "TORRENTS CSV", ptr(1), ptr(1), nil)
+	exec(t, db, `UPDATE torrents_torrent_sources SET scraped_at = $2, updated_at = now() - interval '1 day'
+WHERE info_hash = $1 AND source = 'Torrents CSV'`, merged[:], newer)
+	exec(t, db, `UPDATE torrents_torrent_sources SET scraped_at = $2
+WHERE info_hash = $1 AND source = 'torrents-csv'`, merged[:], older)
+
+	out := exportExchange(t, db, catalogue.ExchangeOptions{})
+
+	require.Equal(t, model.MaybeValid([]exchange.Source{{
+		Name: "dht", Seeders: model.MaybeValid[uint](41), Leechers: model.MaybeValid[uint](7),
+		ScrapedAt: model.MaybeValid(newer),
+	}}), out.records[hash].Sources)
+	require.Equal(t, model.MaybeValid([]exchange.Source{{
+		Name: "torrents-csv", Seeders: model.MaybeValid[uint](5), Leechers: model.MaybeValid[uint](2),
+		ScrapedAt: model.MaybeValid(newer),
+	}}), out.records[merged].Sources, "counts and scrapedAt travel together from the newest scrape")
+}
+
 func TestExchangeExportWritesTheCurrentClassification(t *testing.T) {
 	t.Parallel()
 

@@ -2,6 +2,7 @@ package dhtcrawler
 
 import (
 	"context"
+	"database/sql"
 	"database/sql/driver"
 	"strings"
 	"time"
@@ -532,6 +533,8 @@ func (c *crawler) writeEligibleSourceBatch(
 				// sets to null, fixes torrents indexed before 0.8.0 with published_at
 				// 0001-01-01 00:00:00+00:
 				string(c.dao.TorrentsTorrentSource.PublishedAt.ColumnName()),
+				// the counts and the time they were observed are written together
+				string(c.dao.TorrentsTorrentSource.ScrapedAt.ColumnName()),
 				string(c.dao.TorrentsTorrentSource.UpdatedAt.ColumnName()),
 			}),
 		},
@@ -546,10 +549,18 @@ func createTorrentSourceModel(
 	seeders := model.NewNullUint(uint(result.bfsd.ApproximatedSize()))
 	leechers := model.NewNullUint(uint(result.bfpe.ApproximatedSize()))
 
+	// The counts are always dated: a scrape that carries no observation time is dated
+	// when it is written, which is at most one batch later.
+	scrapedAt := result.scrapedAt
+	if scrapedAt.IsZero() {
+		scrapedAt = time.Now()
+	}
+
 	return model.TorrentsTorrentSource{
-		Source:   dhtSource,
-		InfoHash: result.infoHash,
-		Seeders:  seeders,
-		Leechers: leechers,
+		Source:    dhtSource,
+		InfoHash:  result.infoHash,
+		Seeders:   seeders,
+		Leechers:  leechers,
+		ScrapedAt: sql.NullTime{Time: scrapedAt, Valid: true},
 	}, nil
 }

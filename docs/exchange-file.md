@@ -247,11 +247,13 @@ once the export has succeeded, so a failed export leaves any previous file intac
   written as `torrents-csv`.
 - Origin prefixes are kept as stored.
 - Two stored names that normalise to one name become one entry. The earliest
-  `publishedAt` wins, and the peer counts come from the most recently updated row that
-  has one.
+  `publishedAt` wins. The peer counts and their `scrapedAt` come together from the most
+  recently scraped row that has a count, or, when no such row is dated, from the most
+  recently updated one.
 - The record's `publishedAt` is the earliest across its sources.
-- `scrapedAt` is not written, because no stored value records when peer counts were
-  observed. A source row's `updated_at` also moves on writes that leave the counts alone.
+- `scrapedAt` is written from the time the stored counts were observed: by this instance's
+  crawler when it scraped them, or by the sender when they were imported. Counts stored
+  before that time was recorded have no `scrapedAt`.
 - The classification is the torrent's current one. A classification that knows nothing,
   an empty `inferredTitle`, and empty `languages` and `episodes` are unknown, so they are
   absent.

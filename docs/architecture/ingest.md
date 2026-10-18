@@ -109,7 +109,9 @@ database, and it does more than its name suggests:
   every 30 s.
 
 `createTorrentSourceModel` derives seeders and leechers from the BEP 33 scrape bloom
-filters' `ApproximatedSize()` — they are estimates, not counts.
+filters' `ApproximatedSize()` — they are estimates, not counts. It dates them in
+`scraped_at` with the time the scrape response arrived, so an import can tell whether its
+own counts are newer.
 
 `writeEligibleSourceBatch` writes those counts as an upsert on `torrents_torrent_sources`.
 A torrent can be deleted between triage and that write, and its foreign key would reject

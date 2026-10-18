@@ -29,7 +29,7 @@ in every signature in the tree.
 | `torrent_files`                                                                        | one row per stored file, capped by `SaveFilesThreshold`                                              |
 | `torrent_pieces`                                                                       | piece hashes, only when `SavePieces` is on                                                           |
 | `torrent_sources`                                                                      | the catalogue of sources (`dht`, importer names)                                                     |
-| `torrents_torrent_sources`                                                             | per-source seeders, leechers, published_at, import_id                                                |
+| `torrents_torrent_sources`                                                             | per-source seeders, leechers, scraped_at (when the counts were observed), published_at, import_id    |
 | `torrent_hints`                                                                        | externally supplied classification hints from importers                                              |
 | `torrent_tags`                                                                         | free-form tags                                                                                       |
 | `torrent_contents`                                                                     | the search table: effective classification, inferred title/year fallbacks and `tsv` full-text vector |
