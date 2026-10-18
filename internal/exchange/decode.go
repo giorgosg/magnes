@@ -67,13 +67,25 @@ func (o *object) value(key string) (json.RawMessage, bool) {
 	return raw, true
 }
 
-// done reports every key the reader did not ask for.
-func (o *object) done() {
+// reportUnknownKeys reports every key the reader did not ask for.
+func (o *object) reportUnknownKeys() {
 	for key := range o.fields {
 		if _, ok := o.known[key]; !ok {
 			o.notes.add(ReasonUnknownField, joinPath(o.path, key), "")
 		}
 	}
+}
+
+// child opens a known key holding an object. ok is false when the key is absent or null.
+func (o *object) child(key string) (*object, bool, error) {
+	raw, ok := o.value(key)
+	if !ok {
+		return nil, false, nil
+	}
+
+	child, err := newObject(o.notes, joinPath(o.path, key), raw)
+
+	return child, err == nil, err
 }
 
 func isNull(raw json.RawMessage) bool {
@@ -132,6 +144,23 @@ func required[T any](o *object, key string, decode func(json.RawMessage) (T, err
 	return v.Val, nil
 }
 
+// droppable decodes an optional key whose failure drops only that key, for values that
+// do not affect how the rest is read. What the failed decode noted is discarded, and the
+// key is reported as an invalid entry.
+func droppable[T any](o *object, key string, decode func(json.RawMessage) (T, error)) model.Maybe[T] {
+	mark := len(o.notes.entries)
+
+	v, err := optional(o, key, decode)
+	if err != nil {
+		o.notes.entries = o.notes.entries[:mark]
+		o.notes.add(ReasonInvalidEntry, joinPath(o.path, key), "")
+
+		return model.Maybe[T]{}
+	}
+
+	return v
+}
+
 // optionalArray decodes an optional array. A null element is reported and skipped; an
 // element decoder returning false drops that element.
 func optionalArray[T any](
@@ -139,29 +168,33 @@ func optionalArray[T any](
 	key string,
 	decode func(n *notes, path string, raw json.RawMessage) (T, bool, error),
 ) (model.Maybe[[]T], error) {
-	raw, ok := o.value(key)
-	if !ok {
-		return model.Maybe[[]T]{}, nil
-	}
+	return optional(o, key, func(raw json.RawMessage) ([]T, error) {
+		return decodeArray(o.notes, joinPath(o.path, key)+"[]", raw, decode)
+	})
+}
 
-	path := joinPath(o.path, key) + "[]"
-
+func decodeArray[T any](
+	n *notes,
+	path string,
+	raw json.RawMessage,
+	decode func(n *notes, path string, raw json.RawMessage) (T, bool, error),
+) ([]T, error) {
 	elements, err := decodeJSON[[]json.RawMessage](raw)
 	if err != nil {
-		return model.Maybe[[]T]{}, fmt.Errorf("%s: %w", joinPath(o.path, key), err)
+		return nil, err
 	}
 
 	values := make([]T, 0, len(elements))
 
 	for _, element := range elements {
 		if isNull(element) {
-			o.notes.add(ReasonNull, path, "")
+			n.add(ReasonNull, path, "")
 			continue
 		}
 
-		v, keep, err := decode(o.notes, path, element)
+		v, keep, err := decode(n, path, element)
 		if err != nil {
-			return model.Maybe[[]T]{}, err
+			return nil, err
 		}
 
 		if keep {
@@ -169,7 +202,7 @@ func optionalArray[T any](
 		}
 	}
 
-	return model.MaybeValid(values), nil
+	return values, nil
 }
 
 func decodeHeader(n *notes, fields *object) (Header, error) {
@@ -207,24 +240,16 @@ func decodeHeader(n *notes, fields *object) (Header, error) {
 		)
 	}
 
-	formatObject.done()
+	formatObject.reportUnknownKeys()
 
-	header.Producer, err = optional(fields, "producer", func(raw json.RawMessage) (Producer, error) {
+	// Only format decides how the stream is read, so nothing else in a header is fatal.
+	header.Producer = droppable(fields, "producer", func(raw json.RawMessage) (Producer, error) {
 		return decodeProducer(n, raw)
 	})
-	if err != nil {
-		return header, fmt.Errorf("%w: %w", ErrInvalidHeader, err)
-	}
+	header.ExportedAt = droppable(fields, "exportedAt", decodeTime)
+	header.Since = droppable(fields, "since", decodeTime)
 
-	if header.ExportedAt, err = optional(fields, "exportedAt", decodeTime); err != nil {
-		return header, fmt.Errorf("%w: %w", ErrInvalidHeader, err)
-	}
-
-	if header.Since, err = optional(fields, "since", decodeTime); err != nil {
-		return header, fmt.Errorf("%w: %w", ErrInvalidHeader, err)
-	}
-
-	fields.done()
+	fields.reportUnknownKeys()
 
 	return header, nil
 }
@@ -245,7 +270,7 @@ func decodeVersion(n *notes, raw json.RawMessage) (Version, error) {
 		return v, err
 	}
 
-	o.done()
+	o.reportUnknownKeys()
 
 	return v, nil
 }
@@ -266,7 +291,7 @@ func decodeProducer(n *notes, raw json.RawMessage) (Producer, error) {
 		return p, err
 	}
 
-	o.done()
+	o.reportUnknownKeys()
 
 	return p, nil
 }
@@ -324,11 +349,11 @@ func decodeRecord(fields *object) (Record, error) {
 		return rec, err
 	}
 
-	if rec.Magnes, err = decodeMagnes(fields); err != nil {
-		return rec, err
-	}
+	rec.Magnes = droppable(fields, "magnes", func(raw json.RawMessage) (Magnes, error) {
+		return decodeMagnes(fields.notes, raw)
+	}).Val
 
-	fields.done()
+	fields.reportUnknownKeys()
 
 	return rec, nil
 }
@@ -355,7 +380,7 @@ func decodeFile(n *notes, path string, raw json.RawMessage) (File, bool, error) 
 		return f, false, err
 	}
 
-	o.done()
+	o.reportUnknownKeys()
 
 	return f, true, nil
 }
@@ -391,7 +416,7 @@ func decodeSource(n *notes, path string, raw json.RawMessage) (Source, bool, err
 		return s, false, err
 	}
 
-	o.done()
+	o.reportUnknownKeys()
 
 	if !ValidSourceName(s.Name) {
 		n.add(ReasonInvalidSourceName, joinPath(path, "source"), s.Name)
@@ -401,30 +426,25 @@ func decodeSource(n *notes, path string, raw json.RawMessage) (Source, bool, err
 	return s, true, nil
 }
 
-func decodeMagnes(record *object) (Magnes, error) {
+// Nothing in the vendor section is required to understand the torrent, so a mistyped
+// part of it is dropped and reported, and the record is kept.
+func decodeMagnes(n *notes, raw json.RawMessage) (Magnes, error) {
 	var m Magnes
 
-	raw, ok := record.value("magnes")
-	if !ok {
-		return m, nil
-	}
-
-	o, err := newObject(record.notes, "magnes", raw)
+	o, err := newObject(n, "magnes", raw)
 	if err != nil {
 		return m, err
 	}
 
-	if m.Classification, err = optional(o, "classification", func(raw json.RawMessage) (Classification, error) {
-		return decodeClassification(o.notes, raw)
-	}); err != nil {
-		return m, err
-	}
+	m.Classification = droppable(o, "classification", func(raw json.RawMessage) (Classification, error) {
+		return decodeClassification(n, raw)
+	})
 
-	if m.Tags, err = optionalArray(o, "tags", decodeElement[string]); err != nil {
-		return m, err
-	}
+	m.Tags = droppable(o, "tags", func(raw json.RawMessage) ([]string, error) {
+		return decodeArray(n, "magnes.tags[]", raw, decodeElement[string])
+	})
 
-	o.done()
+	o.reportUnknownKeys()
 
 	return m, nil
 }
@@ -497,22 +517,15 @@ func decodeClassification(n *notes, raw json.RawMessage) (Classification, error)
 		return c, err
 	}
 
-	o.done()
+	o.reportUnknownKeys()
 
 	return c, nil
 }
 
 // A work identity is kept only whole: a half identity is dropped and reported.
 func decodeWork(classification *object) (model.Maybe[Work], error) {
-	raw, ok := classification.value("work")
+	o, ok, err := classification.child("work")
 	if !ok {
-		return model.Maybe[Work]{}, nil
-	}
-
-	path := joinPath(classification.path, "work")
-
-	o, err := newObject(classification.notes, path, raw)
-	if err != nil {
 		return model.Maybe[Work]{}, err
 	}
 
@@ -526,30 +539,29 @@ func decodeWork(classification *object) (model.Maybe[Work], error) {
 		return model.Maybe[Work]{}, err
 	}
 
-	o.done()
+	o.reportUnknownKeys()
 
 	if !source.Valid || !id.Valid {
-		o.notes.add(ReasonInvalidEntry, path, "")
+		o.notes.add(ReasonInvalidEntry, o.path, "")
 		return model.Maybe[Work]{}, nil
 	}
 
 	return model.MaybeValid(Work{Source: source.Val, ID: id.Val}), nil
 }
 
-// Languages are ISO 639-1 codes this program knows; anything else is an unknown value.
+// A language this program does not support is an unknown value.
 func decodeLanguage(n *notes, path string, raw json.RawMessage) (model.Language, bool, error) {
 	code, err := decodeJSON[string](raw)
 	if err != nil {
 		return "", false, fmt.Errorf("%s: %w", path, err)
 	}
 
-	lang := model.Language(code)
-	if len(code) != 2 || !lang.IsValid() {
+	if !supportedLanguage(code) {
 		n.add(ReasonUnknownValue, path, code)
 		return "", false, nil
 	}
 
-	return lang, true, nil
+	return model.Language(code), true, nil
 }
 
 func decodeSeasonEpisodes(n *notes, path string, raw json.RawMessage) (SeasonEpisodes, bool, error) {
@@ -573,21 +585,14 @@ func decodeSeasonEpisodes(n *notes, path string, raw json.RawMessage) (SeasonEpi
 		return SeasonEpisodes{}, false, err
 	}
 
-	o.done()
+	o.reportUnknownKeys()
 
 	entry := SeasonEpisodes{Season: season.Val, Episodes: episodes.Val, WholeSeason: wholeSeason.Val}
 
-	valid := season.Valid && season.Val >= 0 && episodes.Valid != wholeSeason.Valid
-	if episodes.Valid {
-		valid = valid && len(episodes.Val) > 0
-		for _, episode := range episodes.Val {
-			valid = valid && episode >= 0
-		}
-	} else {
-		valid = valid && wholeSeason.Val
-	}
-
-	if !valid {
+	// An empty episodes list is neither form, and wholeSeason: false is not the
+	// whole-season form.
+	emptyEpisodes := episodes.Valid && len(episodes.Val) == 0
+	if !season.Valid || emptyEpisodes || !entry.valid() {
 		n.add(ReasonInvalidEntry, path, "")
 		return SeasonEpisodes{}, false, nil
 	}
@@ -598,13 +603,8 @@ func decodeSeasonEpisodes(n *notes, path string, raw json.RawMessage) (SeasonEpi
 func decodeVideo(classification *object) (Video, error) {
 	var v Video
 
-	raw, ok := classification.value("video")
+	o, ok, err := classification.child("video")
 	if !ok {
-		return v, nil
-	}
-
-	o, err := newObject(classification.notes, joinPath(classification.path, "video"), raw)
-	if err != nil {
 		return v, err
 	}
 
@@ -628,7 +628,7 @@ func decodeVideo(classification *object) (Video, error) {
 		return v, err
 	}
 
-	o.done()
+	o.reportUnknownKeys()
 
 	return v, nil
 }

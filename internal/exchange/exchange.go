@@ -1,7 +1,7 @@
 // Package exchange reads and writes exchange files: versioned NDJSON streams of torrent
 // records that other instances and other programs can read. The contract is
-// docs/exchange-file.md. The package touches no database; importing and exporting the
-// catalogue build on it.
+// docs/exchange-file.md. The package touches no database; reading exchange files into
+// the catalogue and writing them from it build on it.
 package exchange
 
 import (
@@ -113,4 +113,27 @@ type SeasonEpisodes struct {
 	Season      int
 	Episodes    []int
 	WholeSeason bool
+}
+
+// valid reports whether the entry is exactly one of some episodes or the whole season,
+// with no negative season or episode. Reading and writing share it, so what is written
+// always reads back.
+func (s SeasonEpisodes) valid() bool {
+	if s.Season < 0 || (len(s.Episodes) > 0) == s.WholeSeason {
+		return false
+	}
+
+	for _, episode := range s.Episodes {
+		if episode < 0 {
+			return false
+		}
+	}
+
+	return true
+}
+
+// supportedLanguage reports whether a code is an ISO 639-1 code this program supports.
+// Reading and writing share it.
+func supportedLanguage(code string) bool {
+	return len(code) == 2 && model.Language(code).IsValid()
 }

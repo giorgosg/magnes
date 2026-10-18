@@ -4,6 +4,8 @@ import (
 	"errors"
 	"io"
 	"sort"
+
+	"github.com/bitmagnet-io/bitmagnet/internal/slice"
 )
 
 // CheckedHeader is one header and the line it was on.
@@ -64,12 +66,8 @@ func Check(src io.Reader) (CheckResult, error) {
 
 			result.Records++
 
-			seen := make(map[string]struct{}, len(line.Record.Magnes.Tags.Val))
-			for _, tag := range line.Record.Magnes.Tags.Val {
-				if _, dup := seen[tag]; !dup {
-					seen[tag] = struct{}{}
-					tags[tag]++
-				}
+			for _, tag := range slice.Unique(line.Record.Magnes.Tags.Val) {
+				tags[tag]++
 			}
 		}
 	}()

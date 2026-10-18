@@ -18,8 +18,8 @@ var ErrInvalidEpisodes = errors.New("invalid episodes entry")
 // Writer encodes an exchange stream, one header or record per line. It refuses to write
 // anything a reader would drop or report, so its output always reads back unchanged.
 type Writer struct {
-	dst        io.Writer
-	wroteFirst bool
+	dst         io.Writer
+	wroteHeader bool
 }
 
 func NewWriter(dst io.Writer) *Writer {
@@ -48,7 +48,7 @@ func (w *Writer) WriteHeader(h Header) error {
 		return err
 	}
 
-	w.wroteFirst = true
+	w.wroteHeader = true
 
 	return nil
 }
@@ -56,7 +56,7 @@ func (w *Writer) WriteHeader(h Header) error {
 // WriteRecord writes one record under the last header written. Nothing is written when
 // it returns an error.
 func (w *Writer) WriteRecord(r Record) error {
-	if !w.wroteFirst {
+	if !w.wroteHeader {
 		return ErrRecordBeforeHeader
 	}
 
@@ -279,7 +279,7 @@ func toWireClassification(c Classification) (wireClassification, error) {
 	}
 
 	if wire.Languages, err = mapSlice(c.Languages, func(lang model.Language) (string, error) {
-		if !lang.IsValid() {
+		if !supportedLanguage(string(lang)) {
 			return "", fmt.Errorf("%w: language %q", ErrUnmappedValue, string(lang))
 		}
 
@@ -300,12 +300,7 @@ func toWireClassification(c Classification) (wireClassification, error) {
 }
 
 func toWireSeason(s SeasonEpisodes) (wireSeason, error) {
-	valid := s.Season >= 0 && (len(s.Episodes) > 0) != s.WholeSeason
-	for _, episode := range s.Episodes {
-		valid = valid && episode >= 0
-	}
-
-	if !valid {
+	if !s.valid() {
 		return wireSeason{}, fmt.Errorf("%w: season %d", ErrInvalidEpisodes, s.Season)
 	}
 

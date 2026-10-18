@@ -165,8 +165,9 @@ The format has its own enum vocabulary, in lowercase kebab-case:
 | `video.modifier`   | `regional`, `screener`, `rawhd`, `brdisk`, `remux`                                    |
 
 - An unknown enum value is treated as an unknown field. It is dropped, the rest of the
-  record is kept, and the value is reported. A language code outside ISO 639-1 is
-  handled the same way.
+  record is kept, and the value is reported. A language code the reader does not support
+  is handled the same way. Magnes supports 62 ISO 639-1 codes, so a valid code outside
+  that set is also dropped and reported.
 - Adding a value is a minor bump. Removing or renaming one is a major bump.
 - A writer fails on an internal value that has no spelling here, rather than leak it.
 - Never included: the work's title, year or other extended work metadata, evaluation
@@ -186,21 +187,29 @@ The format has its own enum vocabulary, in lowercase kebab-case:
 A reader distinguishes a line it skips from an error that stops the stream.
 
 - **Fatal**, and nothing after it is read: a record before the first header, a header
-  with another `format.name`, a header with an unknown major version, and any header that
-  cannot be read, because the records after it could not be interpreted.
+  with another `format.name`, a header with an unknown major version, and a header whose
+  `format` cannot be read, because the records after it could not be interpreted. A
+  header is recognised by its top-level `format` key, so a line that is not valid JSON
+  is a malformed line, never a header.
 - **Malformed line**, which is skipped and reported by line number: a line that is not a
   JSON object, a record missing `infoHash` or `name`, an `infoHash` that is not 40
-  lowercase hex digits, a known field holding the wrong JSON type, and a file entry
-  missing `index`, `path` or `size`. A file entry is never dropped on its own, because
-  that would silently turn a complete list into a partial one.
-- **Dropped and reported**, with the rest of the record kept:
+  lowercase hex digits, a neutral-core field holding the wrong JSON type, and a file
+  entry missing `index`, `path` or `size`. A file entry is never dropped on its own,
+  because that would silently turn a complete list into a partial one.
+- **Dropped and reported**, with the rest of the line kept:
   - unknown fields, including reserved ones;
   - `null`s, read as absent, with `null` array elements skipped;
   - unknown enum values and language codes;
   - source entries whose name breaks the label rule;
+  - a header's `producer`, `exportedAt` or `since` holding the wrong type, since none of
+    them affects how the file is read;
+  - a `magnes` section, its `classification` or its `tags` holding a wrong JSON type
+    anywhere inside, since nothing in the vendor section is needed to understand the
+    torrent;
   - a `work` missing `source` or `id`;
   - an `episodes` entry that is not exactly one of a non-empty `episodes` list or
-    `wholeSeason: true`, or that has a negative season or episode.
+    `wholeSeason: true`, or that has a negative season or episode. `wholeSeason: false`
+    is the same as leaving it out.
 - Blank lines are ignored.
 
 Reports name array-index-free paths, such as `sources[].completed`.
