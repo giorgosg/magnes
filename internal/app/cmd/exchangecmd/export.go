@@ -57,7 +57,7 @@ func NewExport(p ExportParams) Result {
 			},
 			&cli.StringFlag{
 				Name:  "overlap",
-				Value: defaultOverlap.String(),
+				Value: catalogue.DefaultExchangeOverlap.String(),
 				Usage: "with --since, also re-read changes timestamped this long before it",
 			},
 		},
@@ -70,9 +70,9 @@ func (p ExportParams) export(ctx *cli.Context) error {
 		return cli.Exit("usage: "+exportUsage, exitUsage)
 	}
 
-	since, overlap, err := parseSince(ctx)
+	since, overlap, err := parseIncremental(ctx)
 	if err != nil {
-		return cli.Exit(err.Error()+"\nusage: "+exportUsage, exitUsage)
+		return cli.Exit("export: "+err.Error(), exitUsage)
 	}
 
 	pool, err := p.Pool.Get()
@@ -104,15 +104,9 @@ func (p ExportParams) export(ctx *cli.Context) error {
 	return nil
 }
 
-// defaultOverlap is how far before --since an incremental export re-reads by default.
-// updated_at is stamped from the writer's clock before its transaction commits, so a
-// change can become visible after an export whose snapshot already passed its time.
-// Re-sending a record is harmless, because an import is idempotent.
-const defaultOverlap = time.Hour
-
-// parseSince reads --since and --overlap. --since must carry its offset, as exportedAt
+// parseIncremental reads --since and --overlap. --since must carry its offset, as exportedAt
 // does, so the cursor never depends on the local time zone.
-func parseSince(ctx *cli.Context) (model.Maybe[time.Time], time.Duration, error) {
+func parseIncremental(ctx *cli.Context) (model.Maybe[time.Time], time.Duration, error) {
 	if !ctx.IsSet("since") {
 		if ctx.IsSet("overlap") {
 			return model.Maybe[time.Time]{}, 0, errors.New("--overlap needs --since")

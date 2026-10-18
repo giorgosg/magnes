@@ -181,7 +181,9 @@ v1 digest. `ApplyImport` uses that exact expression for bounded reverse lookup, 
 catalogue-row lock while copying metadata and retains missing evidence through the existing
 helper. It preserves previously retained uncapped paths. The independent compatibility vectors
 and a populated-fixture plan test check this boundary; ordinary reads continue using the ledger
-predicate. A new digest-only ban suppresses future ingestion through the existing locks.
+predicate. A new digest-only ban suppresses future ingestion through the existing locks. The
+incremental exchange-file export joins recently changed decisions back to their torrents
+through the same expression, so changing the index changes that plan too.
 
 `POST /graphql/moderation/import` enforces the separate `http:moderation:import` Object action
 and fails closed without authentication. Cookie-backed uploads require the existing same-origin

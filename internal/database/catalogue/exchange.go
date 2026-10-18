@@ -23,8 +23,15 @@ type Beginner interface {
 	BeginTx(ctx context.Context, options pgx.TxOptions) (pgx.Tx, error)
 }
 
-// DefaultExchangePageSize is how many torrents one keyset page reads.
+// DefaultExchangePageSize is how many torrents one page reads.
 const DefaultExchangePageSize = 1000
+
+// DefaultExchangeOverlap is how far before Since an incremental export should re-read.
+// updated_at is stamped from the writer's clock before its transaction commits, so a
+// change can become visible after an export whose snapshot already passed its time, and
+// the hosts that write the catalogue may run behind the database's clock. Re-sending a
+// record is harmless, because an import is idempotent.
+const DefaultExchangeOverlap = time.Hour
 
 // ExchangeOptions controls an exchange-file export.
 type ExchangeOptions struct {
@@ -35,8 +42,9 @@ type ExchangeOptions struct {
 	// Since makes the export incremental: only torrents whose exchanged data changed at
 	// or after it are written.
 	Since model.Maybe[time.Time]
-	// Overlap re-reads changes stamped this long before Since, because a writer stamps
-	// updated_at before it commits. It does not change the header's since.
+	// Overlap re-reads changes stamped this long before Since; see
+	// DefaultExchangeOverlap, which a caller should pass unless it has a reason not to.
+	// Zero re-reads nothing. It does not change the header's since.
 	Overlap time.Duration
 	// PageSize bounds how many torrents are held in memory at once. Zero means
 	// DefaultExchangePageSize.
@@ -45,8 +53,9 @@ type ExchangeOptions struct {
 
 // ExportExchange writes the visible catalogue as an exchange file: one header, then one
 // record per torrent in infohash order. Pending and banned torrents are never written.
-// It reads one read-only repeatable-read snapshot in keyset pages, so memory stays flat
-// however large the catalogue is. The caller must discard partial output on error.
+// With Since, only torrents changed since then are written.
+// It reads one read-only repeatable-read snapshot in pages, so memory stays flat however
+// large the catalogue is. The caller must discard partial output on error.
 func ExportExchange(ctx context.Context, db Beginner, output io.Writer, options ExchangeOptions) error {
 	pageSize := options.PageSize
 	if pageSize <= 0 {
@@ -110,8 +119,9 @@ func ExportExchange(ctx context.Context, db Beginner, output io.Writer, options 
 	return tx.Commit(ctx)
 }
 
-// exchangeReader reads keyset pages of visible torrents, and everything their records are
-// built from, inside the export's snapshot.
+// exchangeReader reads pages of visible torrents, and everything their records are built
+// from, inside the export's snapshot. A full export reads keyset pages of torrents; an
+// incremental one fetches them from the cursor declareChanged opens.
 type exchangeReader struct {
 	tx      pgx.Tx
 	options ExchangeOptions
@@ -228,10 +238,11 @@ const torrentColumns = `info_hash, name, size, private, files_status::text`
 // changedCursor names the cursor an incremental export pages through.
 const changedCursor = `exchange_changed`
 
-// decidedTorrent is the identifier of the torrent aliased decided, spelled exactly as the
-// expression index of migration 00027, so a lookup from a decision to its torrent is
-// indexed. It equals the identifier VisibleInfoHash computes.
-const decidedTorrent = `encode(sha256(
+// decidedIdentifier is the moderation identifier of the torrent aliased decided, spelled
+// exactly as the expression index of migration 00027 (and moderation.ApplyImport's
+// lookup), so a lookup from a decision to its torrent is indexed. It equals the
+// identifier VisibleInfoHash computes.
+const decidedIdentifier = `encode(sha256(
  '\x6d61676e65733a6d6f6465726174696f6e3a76313a627469683a'::bytea || decided.info_hash), 'hex')`
 
 // declareChanged opens a cursor over the visible torrents whose exchanged data changed at
@@ -248,6 +259,9 @@ const decidedTorrent = `encode(sha256(
 //   - with tags only, a tag's updated_at. Tags are insert-only, so a new tag carries
 //     its own time.
 //
+// A writer, or a migration, that changes one of a record's columns without moving the
+// updated_at listed here makes an incremental export miss that change.
+//
 // The changed infohashes are collected once, deduplicated and joined to torrents, and
 // every page is fetched from the cursor inside the export's snapshot. Keyset pages, as the
 // full export uses, would collect the changes again for every page. The planner is told
@@ -258,7 +272,7 @@ func (r exchangeReader) declareChanged(ctx context.Context) error {
  UNION ALL SELECT info_hash FROM torrents_torrent_sources WHERE updated_at >= $1
  UNION ALL SELECT info_hash FROM torrent_contents WHERE updated_at >= $1
  UNION ALL SELECT decided.info_hash FROM moderation_decisions AS decision
- JOIN torrents AS decided ON decision.identifier = ` + decidedTorrent + `
+ JOIN torrents AS decided ON decision.identifier = ` + decidedIdentifier + `
  WHERE decision.updated_at >= $1`
 	if r.options.IncludeTags {
 		changed += `
