@@ -111,6 +111,14 @@ database, and it does more than its name suggests:
 `createTorrentSourceModel` derives seeders and leechers from the BEP 33 scrape bloom
 filters' `ApproximatedSize()` — they are estimates, not counts.
 
+`writeEligibleSourceBatch` writes those counts as an upsert on `torrents_torrent_sources`.
+A torrent can be deleted between triage and that write, and its foreign key would reject
+the whole batch, so the write first selects the batch's surviving `torrents` rows
+`FOR KEY SHARE` and inserts only those. The lock is the one the foreign key check takes
+anyway; taking it first means a delete still in flight is waited for and then skipped,
+rather than failing the insert. GORM silently drops a `Where` on `Create` with
+`OnConflict`, which is why this is not a `WHERE EXISTS` guard on the insert.
+
 ## Starting and stopping
 
 `OnStart` gives the crawler a context of its own, deliberately not derived from the start
