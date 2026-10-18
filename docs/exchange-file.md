@@ -8,8 +8,8 @@ version of the software, and it is for backup and migration.
 This page is the contract. The reader and writer are `internal/exchange`, and the
 [frozen fixture](../internal/exchange/testdata/exchange-v1.jsonl) is the compatibility
 input for every reader and writer of version 1. Today the format, its reader and writer,
-the `check` command, the full `export` and the CLI `import` exist. Incremental export and
-the HTTP import are specified below and are not built yet.
+the `check` command, the full `export`, and the CLI and HTTP imports exist. Incremental
+export is specified below and is not built yet.
 
 ## Stream
 
@@ -269,8 +269,8 @@ once the export has succeeded, so a failed export leaves any previous file intac
 
 - An import requires an **origin label**: lowercase kebab-case, such as `alice`. See
   [ADR 0010](adr/0010-prefix-imported-sources-with-their-origin.md).
-- `/import` accepts only exchange files. The legacy flat format is dropped. Not built
-  yet: today `POST /import` still reads the legacy flat format.
+- `/import` accepts only exchange files. The legacy flat format is dropped: a legacy
+  line has no header before it, so it is refused as a record before the first header.
 - Interfaces:
   - CLI `import --origin <label> [--overwrite-hints] <file|->`, which reads a file or
     standard input.
@@ -339,3 +339,79 @@ prints new, updated, unchanged, banned and skipped torrents, hints written and k
 added, and every dropped field, value and entry with its count. It exits `1` on a fatal
 error or an interruption. It exits `2` on a usage error, including an invalid origin
 label, before it reads anything or opens the database.
+
+### HTTP import
+
+`POST /import?origin=<label>[&overwriteHints=true]` runs the same import over HTTP. It
+needs a credential holding `http:import:mutate`; the anonymous baseline never grants it.
+The request is refused before its body is read when:
+
+- the `Content-Type` is not `application/x-ndjson` or `application/json`, parameters such
+  as `charset` allowed: `415`. A missing `Content-Type` is refused too. Neither accepted
+  type is a CORS simple-request type, so a cross-origin browser request is always
+  preflighted;
+- `origin` is missing or is not one lowercase kebab-case label, `overwriteHints` is
+  anything but `true` or `false`, either is given twice, or the query holds any other
+  parameter: `400`, with a JSON body `{"error": "…"}`.
+
+Otherwise the body is imported, and the answer is the import's report as JSON:
+
+```json
+{
+  "headers": [
+    {
+      "line": 1,
+      "version": { "major": 1, "minor": 0 },
+      "producer": { "program": "magnes", "version": "0.14.0" },
+      "exportedAt": "2026-10-18T12:00:00Z"
+    }
+  ],
+  "records": 4,
+  "malformed": [{ "line": 7, "error": "not a JSON object" }],
+  "torrents": {
+    "new": 3,
+    "updated": 1,
+    "unchanged": 0,
+    "banned": 0,
+    "skipped": 0
+  },
+  "hints": { "written": 3, "kept": 0 },
+  "tagsAdded": 2,
+  "dropped": [
+    {
+      "scope": "record",
+      "reason": "unknown-field",
+      "path": "surprise",
+      "count": 1
+    }
+  ]
+}
+```
+
+`dropped[].value` is present for unknown values, invalid names, invalid tags and unknown
+work sources. When the import stops, the report gains an `error`, and its counts cover
+the batches committed before it stopped:
+
+| Status | When                                                                                                                             |
+| ------ | -------------------------------------------------------------------------------------------------------------------------------- |
+| `200`  | The whole body was read and written. Malformed lines and drops do not change the status                                          |
+| `413`  | An input limit was reached, below                                                                                                |
+| `422`  | A fatal stream error: a record before the first header, another `format.name`, an unknown major version, or an unreadable header |
+| `400`  | The body could not be read                                                                                                       |
+| `500`  | The database failed. The cause is logged, not returned                                                                           |
+
+The status and body are sent only once the import ends, so a long import holds the
+request open until then.
+
+Over HTTP the reader keeps within limits, because the sender is not trusted with the
+server's memory:
+
+- **A line** may be at most 1 MiB, not counting its newline. A longer line stops the import
+  as soon as that much of it is read.
+- **The report** may hold at most 1000 entries: headers, malformed lines and distinct
+  dropped entries together. Repeats of one dropped entry are counted, not listed, so only
+  distinct entries add up. One more stops the import.
+- **Each string the report keeps** — a path, a value, a malformed line's error or a
+  header's producer — is clipped to 256 bytes and marked with `…`.
+
+The CLI `import` and `check` read the operator's own files and apply no limits.

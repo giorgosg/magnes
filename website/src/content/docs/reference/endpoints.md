@@ -13,7 +13,7 @@ site does not proxy them or connect to your catalogue.
 | `/graphql`       | GraphQL queries and mutations | User browser cookie or supported bearer credential; each Object action is authorised         |
 | `/status`        | HTTP health check             | Available without signing in                                                                 |
 | `/torznab`       | Servarr-compatible indexer    | API key and `torznab:torznab:query` Permission, or an explicitly permitted anonymous request |
-| `/import`        | Newline-delimited JSON import | `POST`, `application/json`, and `http:import:mutate` Permission                              |
+| `/import`        | Exchange-file import          | `POST`, `application/x-ndjson`, `origin`, and `http:import:mutate` Permission                |
 | `/metrics`       | Prometheus scrape             | `http:metrics:query` Permission                                                              |
 | `/debug/pprof/*` | Go profiling                  | `http:pprof:query` Permission                                                                |
 

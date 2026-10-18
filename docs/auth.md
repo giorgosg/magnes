@@ -382,11 +382,12 @@ scrape_configs:
 The same applies to any profiling you do by hand, which now needs a credential carrying
 `http:pprof:query`.
 
-`/import` additionally requires `Content-Type: application/json` and answers 415 otherwise.
-This is defence against the browser rather than against the operator: without it, a
-cross-origin `POST` of `text/plain` is a CORS simple request and lands with no preflight,
-whatever `allowed_origins` says. Command-line clients already send the header — the
-importing guide has always shown it — so nothing that worked before stops working.
+`/import` additionally requires `Content-Type: application/x-ndjson` or
+`application/json` and answers 415 otherwise, before reading the body. This is defence
+against the browser rather than against the operator: without it, a cross-origin `POST`
+of `text/plain` is a CORS simple request and lands with no preflight, whatever
+`allowed_origins` says. Neither accepted type is a simple-request type. The endpoint reads
+[exchange files](exchange-file.md#http-import) only; the legacy flat format is gone.
 
 `/status` is deliberately public, matching the `health::query` grant in the GraphQL
 baseline: orchestrators poll it, and it reports liveness only.
@@ -425,8 +426,9 @@ CORS permission. To deploy a UI on another origin, list its exact origin explici
 `["*"]` restores the previous public cross-origin behavior. This controls browser access,
 while authentication and role permissions still govern API access.
 
-The default allowed headers are `Content-Type`, `Authorization`, `X-Api-Key` and
-`X-Import-Id`. If a cross-origin client needs another header, add it to
+The default allowed headers are `Content-Type`, `Authorization` and `X-Api-Key`.
+`X-Import-Id` left the list with the legacy import format, which was the only thing that
+read it. If a cross-origin client needs another header, add it to
 `http_server.cors.allowed_headers`.
 
 ## Moderation and catalogue reads

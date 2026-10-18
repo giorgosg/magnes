@@ -124,8 +124,9 @@ rather than failing the insert. GORM silently drops a `Where` on `Create` with
 ## Exchange-file imports
 
 The other writer to the catalogue is the exchange-file import, `ExchangeImporter` in
-`internal/importer/exchange*.go`, behind the CLI `import`. The merge rules are in
-[exchange-file.md](../exchange-file.md). This section covers how it meets the crawler.
+`internal/importer/exchange*.go`, behind the CLI `import` and `POST /import`. The merge
+rules are in [exchange-file.md](../exchange-file.md). This section covers how it meets
+the crawler.
 
 - **Source rows never collide.** Every imported source is stored as
   `<origin>:<source>` ([ADR 0010](../adr/0010-prefix-imported-sources-with-their-origin.md)),

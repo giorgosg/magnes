@@ -79,7 +79,7 @@ run as a set of registered workers.
 | `internal/torznab/`     | Torznab/Newznab indexer API — the \*arr surface                                |
 | `internal/httpserver/`  | gin engine, middleware, option registration                                    |
 | `internal/auth/`        | Identity, RBAC, API keys, JWT, users — see [auth.md](auth.md)                  |
-| `internal/importer/`    | Exchange-file import, and the legacy `/import` path                            |
+| `internal/importer/`    | Exchange-file import, behind the CLI `import` and `POST /import`               |
 | `internal/exchange/`    | Exchange-file reader and writer — see [exchange-file.md](../exchange-file.md)  |
 | `internal/moderation/`  | Exact decisions, keyword quarantine and catalogue visibility                   |
 | `internal/health/`      | Health checks reported over GraphQL                                            |
