@@ -164,7 +164,9 @@ file to share an index with another instance or program, whatever its version. I
 torrents, files, sources and the current classification, but not the work's catalogue
 metadata, which a receiver re-fetches. Unlike `task export-data`, it reads the instance's
 own configuration rather than the `PG*` variables. It is read-only and applies no
-migrations, and it pages through one snapshot, so it is safe on a large catalogue.
+migrations, and it pages through one snapshot, so it is safe on a large catalogue. With
+`--since <time>` it writes only what changed since then, for keeping a receiver current;
+it never conveys deletions. See [Incremental export](exchange-file.md#incremental-export).
 
 Be careful with instances you do not own. bitmagnet is frequently self-hosted on slow
 hardware, where a single `count(*)` on `torrents` is genuinely disruptive.

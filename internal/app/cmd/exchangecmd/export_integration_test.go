@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bitmagnet-io/bitmagnet/internal/app/cmd/exchangecmd"
 	"github.com/bitmagnet-io/bitmagnet/internal/database/dbtest"
@@ -142,4 +143,67 @@ func TestExportNeedsExactlyOneOutput(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, 2, exitCode)
 	assert.Contains(t, stderr, "<file|->")
+}
+
+func seedAt(t *testing.T, db *dbtest.DB, hash protocol.ID, at time.Time) {
+	t.Helper()
+
+	_, err := db.Pool.Exec(t.Context(), `INSERT INTO torrents (info_hash,name,size,private,created_at,updated_at)
+VALUES ($1,'Seeded',10,false,$2,$2)`, hash[:], at)
+	require.NoError(t, err)
+}
+
+// --since takes the RFC 3339 time a previous header's exportedAt carries, and re-reads an
+// hour before it by default.
+func TestExportSinceWritesOnlyChangesAndSaysSince(t *testing.T) {
+	t.Parallel()
+
+	db := dbtest.New(t)
+	since := time.Date(2026, 10, 11, 0, 0, 0, 123456000, time.UTC)
+	withinOverlap, beforeOverlap := protocol.ID{1}, protocol.ID{2}
+
+	seedAt(t, db, withinOverlap, since.Add(-59*time.Minute))
+	seedAt(t, db, beforeOverlap, since.Add(-61*time.Minute))
+
+	stdout, stderr, exitCode, err := runExport(t, db, "--since", "2026-10-11T03:00:00.123456+03:00", "-")
+	require.NoError(t, err)
+	assert.Equal(t, -1, exitCode)
+	assert.Empty(t, stderr)
+
+	result, err := exchange.Check(strings.NewReader(stdout))
+	require.NoError(t, err)
+	require.Len(t, result.Headers, 1)
+	assert.Equal(t, since, result.Headers[0].Header.Since.Val)
+	assert.Equal(t, 1, result.Records)
+	assert.Contains(t, stdout, withinOverlap.String())
+
+	stdout, _, _, err = runExport(t, db, "--since", "2026-10-11T00:00:00.123456Z", "--overlap", "0s", "-")
+	require.NoError(t, err)
+	result, err = exchange.Check(strings.NewReader(stdout))
+	require.NoError(t, err)
+	assert.Equal(t, 0, result.Records, "--overlap 0s re-reads nothing")
+}
+
+func TestExportRejectsABadSinceOrOverlap(t *testing.T) {
+	t.Parallel()
+
+	db := dbtest.New(t)
+
+	for name, args := range map[string][]string{
+		"not a time":            {"--since", "yesterday", "-"},
+		"no offset":             {"--since", "2026-10-11T00:00:00", "-"},
+		"not a duration":        {"--since", "2026-10-11T00:00:00Z", "--overlap", "an hour", "-"},
+		"negative overlap":      {"--since", "2026-10-11T00:00:00Z", "--overlap", "-1h", "-"},
+		"overlap with no since": {"--overlap", "1h", "-"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			stdout, stderr, exitCode, err := runExport(t, db, args...)
+			require.Error(t, err)
+			assert.Equal(t, 2, exitCode)
+			assert.Empty(t, stdout)
+			assert.NotEmpty(t, stderr)
+		})
+	}
 }
