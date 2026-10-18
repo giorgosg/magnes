@@ -8,6 +8,7 @@ import (
 	"github.com/bitmagnet-io/bitmagnet/internal/app/cmd/classifiercmd"
 	"github.com/bitmagnet-io/bitmagnet/internal/app/cmd/configcmd"
 	"github.com/bitmagnet-io/bitmagnet/internal/app/cmd/enhancementcmd"
+	"github.com/bitmagnet-io/bitmagnet/internal/app/cmd/exchangecmd"
 	"github.com/bitmagnet-io/bitmagnet/internal/app/cmd/processcmd"
 	"github.com/bitmagnet-io/bitmagnet/internal/app/cmd/reprocesscmd"
 	"github.com/bitmagnet-io/bitmagnet/internal/app/cmd/workercmd"
@@ -74,6 +75,7 @@ func New() fx.Option {
 			configcmd.New,
 			enhancementcmd.New,
 			enhancementcmd.LogOutput,
+			exchangecmd.NewCheck,
 			reprocesscmd.New,
 			processcmd.New,
 			workercmd.New,
