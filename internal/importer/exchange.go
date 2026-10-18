@@ -39,6 +39,8 @@ type ExchangeOptions struct {
 	// OverwriteHints replaces an existing hint with the incoming classification. Without
 	// it, an existing hint wins.
 	OverwriteHints bool
+	// Limits bound what the import holds in memory. Zero is no limit.
+	Limits exchange.Limits
 }
 
 // ExchangeImporter reads exchange files into the catalogue under the merge rules in
@@ -137,12 +139,12 @@ func (i *ExchangeImporter) Import(
 
 	defer close(done)
 
-	go readBatches(exchange.NewReader(src), i.config.BatchSize, batches, done)
+	go readBatches(exchange.NewLimitedReader(src, options.Limits), i.config.BatchSize, batches, done)
 
 	var (
 		report  ExchangeReport
 		dropped []exchange.ReportEntry
-		ownDrop = make(drops)
+		ownDrop = newDrops(options.Limits)
 	)
 
 	finish := func(err error) (ExchangeReport, error) {
@@ -179,6 +181,10 @@ func (i *ExchangeImporter) Import(
 			}
 
 			report.add(written)
+
+			if err := ownDrop.checkLimit(len(report.Headers) + len(report.Malformed) + len(dropped)); err != nil {
+				return finish(err)
+			}
 		}
 
 		if batch.last {
@@ -274,16 +280,35 @@ type dropKey struct {
 	value  string
 }
 
-type drops map[dropKey]int
+// drops is the import's own drop report, kept within the import's limits.
+type drops struct {
+	counts map[dropKey]int
+	limits exchange.Limits
+}
+
+func newDrops(limits exchange.Limits) drops {
+	return drops{counts: make(map[dropKey]int), limits: limits}
+}
 
 func (d drops) add(reason exchange.Reason, path, value string) {
-	d[dropKey{reason: reason, path: path, value: value}]++
+	d.counts[dropKey{reason: reason, path: path, value: d.limits.Clip(value)}]++
+}
+
+// checkLimit stops an import whose report, with the reader's reported entries, would hold
+// more than the limit allows. The reader enforces the limit on its own entries.
+func (d drops) checkLimit(reported int) error {
+	if d.limits.MaxReported > 0 && reported+len(d.counts) > d.limits.MaxReported {
+		return fmt.Errorf("%w: more than %d headers, malformed lines and distinct dropped entries",
+			exchange.ErrTooMuchReported, d.limits.MaxReported)
+	}
+
+	return nil
 }
 
 // mergeDrops appends the import's own drops to the reader's, in the same stable order.
 func mergeDrops(read []exchange.ReportEntry, own drops) []exchange.ReportEntry {
 	entries := append([]exchange.ReportEntry(nil), read...)
-	for key, n := range own {
+	for key, n := range own.counts {
 		entries = append(entries, exchange.ReportEntry{
 			Scope:  exchange.ScopeRecord,
 			Reason: key.reason,

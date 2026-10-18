@@ -47,6 +47,13 @@ const (
 	JSONMediaType   = "application/json"
 )
 
+// The input limits of POST /import. See exchange.Limits.
+const (
+	MaxLineBytes     = 1 << 20
+	MaxReported      = 1000
+	MaxReportedBytes = 256
+)
+
 // The query parameters POST /import reads.
 const (
 	originParam         = "origin"
@@ -142,6 +149,11 @@ func parseOptions(query url.Values) (importer.ExchangeOptions, error) {
 	}
 
 	options.Origin = origin
+	options.Limits = exchange.Limits{
+		MaxLineBytes:     MaxLineBytes,
+		MaxReported:      MaxReported,
+		MaxReportedBytes: MaxReportedBytes,
+	}
 
 	if values, ok := query[overwriteHintsParam]; ok {
 		switch values[0] {
@@ -188,6 +200,8 @@ func statusFor(err error) int {
 	var fatal *exchange.FatalError
 
 	switch {
+	case errors.Is(err, exchange.ErrLineTooLong), errors.Is(err, exchange.ErrTooMuchReported):
+		return http.StatusRequestEntityTooLarge
 	case errors.Is(err, exchange.ErrRecordBeforeHeader),
 		errors.Is(err, exchange.ErrUnsupportedFormat),
 		errors.Is(err, exchange.ErrUnsupportedVersion),

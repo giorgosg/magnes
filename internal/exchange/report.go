@@ -61,10 +61,38 @@ func (n *notes) add(reason Reason, path, value string) {
 
 type report map[reportKey]int
 
-func (r report) merge(n *notes) {
-	for _, key := range n.entries {
+func (r report) merge(keys []reportKey) {
+	for _, key := range keys {
 		r[key]++
 	}
+}
+
+// unseen returns the distinct keys the report does not hold yet.
+func (r report) unseen(keys []reportKey) map[reportKey]struct{} {
+	unseen := make(map[reportKey]struct{})
+
+	for _, key := range keys {
+		if _, ok := r[key]; !ok {
+			unseen[key] = struct{}{}
+		}
+	}
+
+	return unseen
+}
+
+// clipped returns the line's drops with each path and value clipped to n bytes.
+func (n *notes) clipped(bytes int) []reportKey {
+	if bytes <= 0 {
+		return n.entries
+	}
+
+	keys := make([]reportKey, len(n.entries))
+	for i, key := range n.entries {
+		key.path, key.value = clip(key.path, bytes), clip(key.value, bytes)
+		keys[i] = key
+	}
+
+	return keys
 }
 
 func (r report) entries() []ReportEntry {
