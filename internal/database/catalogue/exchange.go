@@ -78,6 +78,12 @@ func ExportExchange(ctx context.Context, db Beginner, output io.Writer, options 
 
 	reader := exchangeReader{tx: tx, options: options}
 
+	if options.Since.Valid {
+		if err = reader.declareChanged(ctx); err != nil {
+			return err
+		}
+	}
+
 	for after := []byte{}; ; {
 		records, err := reader.readPage(ctx, after, pageSize)
 		if err != nil {
@@ -161,26 +167,15 @@ func (r exchangeReader) readPage(ctx context.Context, after []byte, limit int) (
 func (r exchangeReader) readTorrents(
 	ctx context.Context, after []byte, limit int,
 ) (records []exchange.Record, listed [][]byte, err error) {
-	query := `SELECT info_hash, name, size, private, files_status::text FROM torrents
- WHERE info_hash > $1 AND ` + VisibleInfoHash("torrents.info_hash")
-	args := []any{after, limit}
-
+	var rows pgx.Rows
 	if r.options.Since.Valid {
-		query += ` AND (torrents.updated_at >= $3
- OR EXISTS (SELECT 1 FROM torrents_torrent_sources AS s WHERE s.info_hash = torrents.info_hash AND s.updated_at >= $3)
- OR EXISTS (SELECT 1 FROM torrent_contents AS c WHERE c.info_hash = torrents.info_hash AND c.updated_at >= $3)
- OR EXISTS (SELECT 1 FROM moderation_decisions AS d
- WHERE d.identifier = ` + moderationIdentifier("torrents.info_hash") + ` AND d.updated_at >= $3)`
-		if r.options.IncludeTags {
-			query += `
- OR EXISTS (SELECT 1 FROM torrent_tags AS g WHERE g.info_hash = torrents.info_hash AND g.updated_at >= $3)`
-		}
-
-		query += `)`
-		args = append(args, r.options.Since.Val.Add(-r.options.Overlap))
+		rows, err = r.tx.Query(ctx, fmt.Sprintf(`FETCH FORWARD %d FROM `+changedCursor, limit))
+	} else {
+		rows, err = r.tx.Query(ctx, `SELECT `+torrentColumns+` FROM torrents
+ WHERE info_hash > $1 AND `+VisibleInfoHash("torrents.info_hash")+`
+ ORDER BY info_hash LIMIT $2`, after, limit)
 	}
 
-	rows, err := r.tx.Query(ctx, query+` ORDER BY info_hash LIMIT $2`, args...)
 	if err != nil {
 		return nil, nil, fmt.Errorf("read torrents: %w", err)
 	}
@@ -224,6 +219,64 @@ func (r exchangeReader) readTorrents(
 	}
 
 	return records, listed, nil
+}
+
+// torrentColumns are the torrents columns a record starts from, in readTorrents' order.
+const torrentColumns = `info_hash, name, size, private, files_status::text`
+
+// changedCursor names the cursor an incremental export pages through.
+const changedCursor = `exchange_changed`
+
+// decidedTorrent is the identifier of the torrent aliased decided, spelled exactly as the
+// expression index of migration 00027, so a lookup from a decision to its torrent is
+// indexed. It equals the identifier VisibleInfoHash computes.
+const decidedTorrent = `encode(sha256(
+ '\x6d61676e65733a6d6f6465726174696f6e3a76313a627469683a'::bytea || decided.info_hash), 'hex')`
+
+// declareChanged opens a cursor over the visible torrents whose exchanged data changed at
+// or after the cursor time, Since less Overlap, in infohash order. A torrent qualifies
+// when any row its record is built from was stamped at or after it:
+//
+//   - torrents.updated_at, which a metainfo write and a filled file list move. File rows
+//     are insert-only and arrive with that write, so they need no clause of their own;
+//   - a source row's updated_at, which a scrape and an import move without touching
+//     the torrents row;
+//   - a classification's updated_at, which reclassification and enhancement move;
+//   - its moderation decision's updated_at, so a torrent allowed out of quarantine is
+//     sent although none of its own rows changed;
+//   - with tags only, a tag's updated_at. Tags are insert-only, so a new tag carries
+//     its own time.
+//
+// The changed infohashes are collected once, deduplicated and joined to torrents, and
+// every page is fetched from the cursor inside the export's snapshot. Keyset pages, as the
+// full export uses, would collect the changes again for every page. The planner is told
+// the whole result will be read, so that it plans for total cost rather than for the
+// first rows: planned for the first rows, it walked the whole primary key in order.
+func (r exchangeReader) declareChanged(ctx context.Context) error {
+	changed := `SELECT info_hash FROM torrents WHERE updated_at >= $1
+ UNION ALL SELECT info_hash FROM torrents_torrent_sources WHERE updated_at >= $1
+ UNION ALL SELECT info_hash FROM torrent_contents WHERE updated_at >= $1
+ UNION ALL SELECT decided.info_hash FROM moderation_decisions AS decision
+ JOIN torrents AS decided ON decision.identifier = ` + decidedTorrent + `
+ WHERE decision.updated_at >= $1`
+	if r.options.IncludeTags {
+		changed += `
+ UNION ALL SELECT info_hash FROM torrent_tags WHERE updated_at >= $1`
+	}
+
+	if _, err := r.tx.Exec(ctx, `SET LOCAL cursor_tuple_fraction = 1`); err != nil {
+		return fmt.Errorf("find changed torrents: %w", err)
+	}
+
+	if _, err := r.tx.Exec(ctx, `DECLARE `+changedCursor+` NO SCROLL CURSOR FOR
+ SELECT `+torrentColumns+` FROM torrents
+ WHERE torrents.info_hash IN (`+changed+`)
+ AND `+VisibleInfoHash("torrents.info_hash")+`
+ ORDER BY info_hash`, r.options.Since.Val.Add(-r.options.Overlap)); err != nil {
+		return fmt.Errorf("find changed torrents: %w", err)
+	}
+
+	return nil
 }
 
 // applyFilesStatus decides what the record says about its file list, and reports
