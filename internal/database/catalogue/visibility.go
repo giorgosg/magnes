@@ -1,5 +1,6 @@
-// Package catalogue supplies the mandatory visibility policy for ordinary catalogue reads.
-// Private moderation reads use the moderation service instead.
+// Package catalogue supplies the mandatory visibility policy for ordinary catalogue reads,
+// and the two exports that read through it: the catalogue export and the exchange-file
+// export. Private moderation reads use the moderation service instead.
 package catalogue
 
 import (

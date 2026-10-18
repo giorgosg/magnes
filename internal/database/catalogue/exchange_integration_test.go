@@ -17,7 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// exported is an exchange export decoded with ticket 01's reader.
+// exported is the output of an exchange-file export, decoded with exchange.Reader.
 type exported struct {
 	raw     string
 	headers []exchange.Header
@@ -382,7 +382,9 @@ func (c *rowCounter) TraceQueryEnd(_ context.Context, _ *pgx.Conn, data pgx.Trac
 }
 
 // Memory stays flat: the export reads the catalogue in pages, so no query ever returns
-// more than a page of rows, however large the catalogue.
+// more than a page of rows, however large the catalogue. Each torrent has one source and
+// no files here, so every per-page query is bounded by the page size; with files, a page
+// holds up to the page size times the file-saving threshold.
 func TestExchangeExportPagesThroughTheCatalogue(t *testing.T) {
 	t.Parallel()
 

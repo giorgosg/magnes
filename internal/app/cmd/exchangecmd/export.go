@@ -17,8 +17,8 @@ import (
 	"go.uber.org/fx"
 )
 
-// ProducerProgram names this program in the headers it writes.
-const ProducerProgram = "magnes"
+// producerProgram names this program in the headers it writes.
+const producerProgram = "magnes"
 
 type ExportParams struct {
 	fx.In
@@ -62,14 +62,14 @@ func (p ExportParams) export(ctx *cli.Context) error {
 		IncludeTags: ctx.Bool("include-tags"),
 	}
 
-	write := func(w io.Writer) error {
+	exportTo := func(w io.Writer) error {
 		return catalogue.ExportExchange(ctx.Context, pool, w, options)
 	}
 
 	if name := ctx.Args().First(); name == "-" {
-		err = write(ctx.App.Writer)
+		err = exportTo(ctx.App.Writer)
 	} else {
-		err = writeFileAtomically(name, write)
+		err = writeFileAtomically(name, exportTo)
 	}
 
 	if err != nil {
@@ -80,7 +80,7 @@ func (p ExportParams) export(ctx *cli.Context) error {
 }
 
 func producer() exchange.Producer {
-	p := exchange.Producer{Program: model.MaybeValid(ProducerProgram)}
+	p := exchange.Producer{Program: model.MaybeValid(producerProgram)}
 	if version.GitTag != "" {
 		p.Version = model.MaybeValid(version.GitTag)
 	}
@@ -89,9 +89,9 @@ func producer() exchange.Producer {
 }
 
 // writeFileAtomically writes to a temporary file beside name and renames it into place
-// only once write has succeeded, so a failed export leaves any previous file intact and
+// only once fill has succeeded, so a failed export leaves any previous file intact and
 // never leaves a partial file under the requested name.
-func writeFileAtomically(name string, write func(io.Writer) error) (err error) {
+func writeFileAtomically(name string, fill func(io.Writer) error) (err error) {
 	tmp, err := os.CreateTemp(filepath.Dir(name), "."+filepath.Base(name)+".*.partial")
 	if err != nil {
 		return err
@@ -105,7 +105,7 @@ func writeFileAtomically(name string, write func(io.Writer) error) (err error) {
 	}()
 
 	buffered := bufio.NewWriter(tmp)
-	if err = write(buffered); err != nil {
+	if err = fill(buffered); err != nil {
 		return err
 	}
 

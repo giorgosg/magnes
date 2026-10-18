@@ -69,10 +69,10 @@ func ExportExchange(ctx context.Context, db Beginner, output io.Writer, options 
 		return err
 	}
 
-	page := exchangePage{tx: tx, options: options}
+	reader := exchangeReader{tx: tx, options: options}
 
 	for after := []byte{}; ; {
-		records, err := page.read(ctx, after, pageSize)
+		records, err := reader.readPage(ctx, after, pageSize)
 		if err != nil {
 			return err
 		}
@@ -97,41 +97,51 @@ func ExportExchange(ctx context.Context, db Beginner, output io.Writer, options 
 	return tx.Commit(ctx)
 }
 
-// exchangePage reads one keyset page of visible torrents and everything their records
-// are built from, inside the export's snapshot.
-type exchangePage struct {
+// exchangeReader reads keyset pages of visible torrents, and everything their records are
+// built from, inside the export's snapshot.
+type exchangeReader struct {
 	tx      pgx.Tx
 	options ExchangeOptions
 }
 
-func (p exchangePage) read(ctx context.Context, after []byte, limit int) ([]exchange.Record, error) {
-	records, err := p.readTorrents(ctx, after, limit)
+// exchangePage is one page's records by infohash, for the readers that fill them in.
+type exchangePage struct {
+	tx      pgx.Tx
+	records map[protocol.ID]*exchange.Record
+	hashes  [][]byte
+}
+
+func (r exchangeReader) readPage(ctx context.Context, after []byte, limit int) ([]exchange.Record, error) {
+	records, listed, err := r.readTorrents(ctx, after, limit)
 	if err != nil || len(records) == 0 {
 		return records, err
 	}
 
-	index := make(map[protocol.ID]*exchange.Record, len(records))
-	hashes := make([][]byte, len(records))
+	page := exchangePage{
+		tx:      r.tx,
+		records: make(map[protocol.ID]*exchange.Record, len(records)),
+		hashes:  make([][]byte, len(records)),
+	}
 
 	for i := range records {
-		index[records[i].InfoHash] = &records[i]
-		hashes[i] = records[i].InfoHash.Bytes()
+		page.records[records[i].InfoHash] = &records[i]
+		page.hashes[i] = records[i].InfoHash.Bytes()
 	}
 
-	if err = p.readFiles(ctx, hashes, index); err != nil {
+	if err = page.readFiles(ctx, listed); err != nil {
 		return nil, err
 	}
 
-	if err = p.readSources(ctx, hashes, index); err != nil {
+	if err = page.readSources(ctx); err != nil {
 		return nil, err
 	}
 
-	if err = p.readClassifications(ctx, hashes, index); err != nil {
+	if err = page.readClassifications(ctx); err != nil {
 		return nil, err
 	}
 
-	if p.options.IncludeTags {
-		if err = p.readTags(ctx, hashes, index); err != nil {
+	if r.options.IncludeTags {
+		if err = page.readTags(ctx); err != nil {
 			return nil, err
 		}
 	}
@@ -139,16 +149,18 @@ func (p exchangePage) read(ctx context.Context, after []byte, limit int) ([]exch
 	return records, nil
 }
 
-func (p exchangePage) readTorrents(ctx context.Context, after []byte, limit int) ([]exchange.Record, error) {
-	rows, err := p.tx.Query(ctx, `SELECT info_hash, name, size, private, files_status::text FROM torrents
+// readTorrents reads the page's torrents, and lists those whose files are read from
+// torrent_files.
+func (r exchangeReader) readTorrents(
+	ctx context.Context, after []byte, limit int,
+) (records []exchange.Record, listed [][]byte, err error) {
+	rows, err := r.tx.Query(ctx, `SELECT info_hash, name, size, private, files_status::text FROM torrents
  WHERE info_hash > $1 AND `+VisibleInfoHash("torrents.info_hash")+`
  ORDER BY info_hash LIMIT $2`, after, limit)
 	if err != nil {
-		return nil, fmt.Errorf("read torrents: %w", err)
+		return nil, nil, fmt.Errorf("read torrents: %w", err)
 	}
 	defer rows.Close()
-
-	var records []exchange.Record
 
 	for rows.Next() {
 		var (
@@ -160,55 +172,67 @@ func (p exchangePage) readTorrents(ctx context.Context, after []byte, limit int)
 		)
 
 		if err = rows.Scan(&hash, &record.Name, &size, &private, &filesStatus); err != nil {
-			return nil, fmt.Errorf("read torrents: %w", err)
+			return nil, nil, fmt.Errorf("read torrents: %w", err)
 		}
 
 		if record.InfoHash, err = protocol.NewIDFromByteSlice(hash); err != nil {
-			return nil, fmt.Errorf("read torrents: %w", err)
+			return nil, nil, fmt.Errorf("read torrents: %w", err)
 		}
 
 		record.Size = model.MaybeValid(uint64(size)) //nolint:gosec // sizes are never negative
 		record.Private = model.MaybeValid(private)
 
-		if err = applyFilesStatus(&record, model.FilesStatus(filesStatus)); err != nil {
-			return nil, fmt.Errorf("export torrent %s: %w", record.InfoHash, err)
+		stored, err := applyFilesStatus(&record, model.FilesStatus(filesStatus))
+		if err != nil {
+			return nil, nil, fmt.Errorf("export torrent %s: %w", record.InfoHash, err)
+		}
+
+		if stored {
+			listed = append(listed, hash)
 		}
 
 		records = append(records, record)
 	}
 
 	if err = rows.Err(); err != nil {
-		return nil, fmt.Errorf("read torrents: %w", err)
+		return nil, nil, fmt.Errorf("read torrents: %w", err)
 	}
 
-	return records, nil
+	return records, listed, nil
 }
 
-// applyFilesStatus decides what the record says about its file list. A single-file
-// torrent has one entry built from the torrent itself; a multi-file list and a partial
-// one are read from torrent_files afterwards, into the empty list started here.
-func applyFilesStatus(record *exchange.Record, status model.FilesStatus) error {
+// applyFilesStatus decides what the record says about its file list, and reports
+// whether the list is read from torrent_files. A single-file torrent has one entry built
+// from the torrent itself; a multi-file list and a partial one are read afterwards, into
+// the empty list started here.
+func applyFilesStatus(record *exchange.Record, status model.FilesStatus) (stored bool, err error) {
 	switch status {
 	case model.FilesStatusNoInfo:
+		return false, nil
 	case model.FilesStatusSingle:
 		record.Files = model.MaybeValid([]exchange.File{{Index: 0, Path: record.Name, Size: record.Size.Val}})
+		return false, nil
 	case model.FilesStatusMulti:
 		record.Files = model.MaybeValid([]exchange.File{})
+		return true, nil
 	case model.FilesStatusOverThreshold:
 		record.Files = model.MaybeValid([]exchange.File{})
 		record.FilesComplete = model.MaybeValid(false)
-	default:
-		return fmt.Errorf("%w: files_status %q", exchange.ErrUnmappedValue, string(status))
-	}
 
-	return nil
+		return true, nil
+	default:
+		return false, fmt.Errorf("%w: files_status %q", exchange.ErrUnmappedValue, string(status))
+	}
 }
 
-func (p exchangePage) readFiles(ctx context.Context, hashes [][]byte, index map[protocol.ID]*exchange.Record) error {
-	rows, err := p.tx.Query(ctx, `SELECT torrent_files.info_hash, torrent_files.index, torrent_files.path,
- torrent_files.size FROM torrent_files JOIN torrents ON torrents.info_hash = torrent_files.info_hash
- WHERE torrent_files.info_hash = ANY($1) AND torrents.files_status IN ('multi', 'over_threshold')
- ORDER BY torrent_files.info_hash, torrent_files.index`, hashes)
+// readFiles reads the stored file lists of the listed torrents, in index order.
+func (p exchangePage) readFiles(ctx context.Context, listed [][]byte) error {
+	if len(listed) == 0 {
+		return nil
+	}
+
+	rows, err := p.tx.Query(ctx, `SELECT info_hash, index, path, size FROM torrent_files
+ WHERE info_hash = ANY($1) ORDER BY info_hash, index`, listed)
 	if err != nil {
 		return fmt.Errorf("read files: %w", err)
 	}
@@ -226,7 +250,7 @@ func (p exchangePage) readFiles(ctx context.Context, hashes [][]byte, index map[
 			return fmt.Errorf("read files: %w", err)
 		}
 
-		record := index[protocol.ID(hash)]
+		record := p.records[protocol.ID(hash)]
 		record.Files.Val = append(record.Files.Val, exchange.File{
 			Index: uint(fileIndex), //nolint:gosec // file indexes are never negative
 			Path:  path,
@@ -245,9 +269,9 @@ func (p exchangePage) readFiles(ctx context.Context, hashes [][]byte, index map[
 // the record by the earliest publication any source knows of. An unknown peer count
 // stays absent rather than becoming 0. Rows arrive newest first, which mergeSource
 // relies on.
-func (p exchangePage) readSources(ctx context.Context, hashes [][]byte, index map[protocol.ID]*exchange.Record) error {
+func (p exchangePage) readSources(ctx context.Context) error {
 	rows, err := p.tx.Query(ctx, `SELECT info_hash, source, seeders, leechers, published_at
- FROM torrents_torrent_sources WHERE info_hash = ANY($1) ORDER BY info_hash, updated_at DESC, source`, hashes)
+ FROM torrents_torrent_sources WHERE info_hash = ANY($1) ORDER BY info_hash, updated_at DESC, source`, p.hashes)
 	if err != nil {
 		return fmt.Errorf("read sources: %w", err)
 	}
@@ -265,14 +289,14 @@ func (p exchangePage) readSources(ctx context.Context, hashes [][]byte, index ma
 			return fmt.Errorf("read sources: %w", err)
 		}
 
-		record := index[protocol.ID(hash)]
+		record := p.records[protocol.ID(hash)]
 
 		name, err := exchange.NormalizeSourceName(stored)
 		if err != nil {
 			return fmt.Errorf("export torrent %s: %w", record.InfoHash, err)
 		}
 
-		source := exchange.Source{Name: name, Seeders: count(seeders), Leechers: count(leechers)}
+		source := exchange.Source{Name: name, Seeders: peerCount(seeders), Leechers: peerCount(leechers)}
 
 		if publishedAt != nil {
 			source.PublishedAt = model.MaybeValid(publishedAt.UTC())
@@ -287,7 +311,7 @@ func (p exchangePage) readSources(ctx context.Context, hashes [][]byte, index ma
 		return fmt.Errorf("read sources: %w", err)
 	}
 
-	for _, record := range index {
+	for _, record := range p.records {
 		slices.SortFunc(record.Sources.Val, func(a, b exchange.Source) int {
 			return strings.Compare(a.Name, b.Name)
 		})
@@ -327,7 +351,7 @@ func earliest(a, b model.Maybe[time.Time]) model.Maybe[time.Time] {
 	return a
 }
 
-func count(v *int64) model.Maybe[uint] {
+func peerCount(v *int64) model.Maybe[uint] {
 	if v == nil {
 		return model.Maybe[uint]{}
 	}
@@ -343,13 +367,11 @@ func count(v *int64) model.Maybe[uint] {
 //
 // Only release attributes and the work identity travel. The work's own title, year and
 // other catalogue metadata stay behind: the receiver re-fetches them by identity.
-func (p exchangePage) readClassifications(
-	ctx context.Context, hashes [][]byte, index map[protocol.ID]*exchange.Record,
-) error {
+func (p exchangePage) readClassifications(ctx context.Context) error {
 	rows, err := p.tx.Query(ctx, `SELECT DISTINCT ON (info_hash) info_hash, content_type, content_source,
  content_id, inferred_title, inferred_year, languages, episodes, video_resolution, video_source,
  video_codec, video_3d, video_modifier, release_group
- FROM torrent_contents WHERE info_hash = ANY($1) ORDER BY info_hash, updated_at DESC, id`, hashes)
+ FROM torrent_contents WHERE info_hash = ANY($1) ORDER BY info_hash, updated_at DESC, id`, p.hashes)
 	if err != nil {
 		return fmt.Errorf("read classifications: %w", err)
 	}
@@ -385,7 +407,7 @@ func (p exchangePage) readClassifications(
 			return fmt.Errorf("read classifications: %w", err)
 		}
 
-		record := index[protocol.ID(hash)]
+		record := p.records[protocol.ID(hash)]
 
 		c := exchange.Classification{
 			ContentType:   known[model.ContentType](contentType),
@@ -490,9 +512,9 @@ func decodeEpisodes(raw []byte) (model.Maybe[[]exchange.SeasonEpisodes], error) 
 
 // readTags writes each torrent's local tags. They record the operator's own curation,
 // so they travel only when the export asks for them.
-func (p exchangePage) readTags(ctx context.Context, hashes [][]byte, index map[protocol.ID]*exchange.Record) error {
+func (p exchangePage) readTags(ctx context.Context) error {
 	rows, err := p.tx.Query(ctx, `SELECT info_hash, name FROM torrent_tags
- WHERE info_hash = ANY($1) ORDER BY info_hash, name`, hashes)
+ WHERE info_hash = ANY($1) ORDER BY info_hash, name`, p.hashes)
 	if err != nil {
 		return fmt.Errorf("read tags: %w", err)
 	}
@@ -508,7 +530,7 @@ func (p exchangePage) readTags(ctx context.Context, hashes [][]byte, index map[p
 			return fmt.Errorf("read tags: %w", err)
 		}
 
-		tags := &index[protocol.ID(hash)].Magnes.Tags
+		tags := &p.records[protocol.ID(hash)].Magnes.Tags
 		tags.Valid = true
 		tags.Val = append(tags.Val, name)
 	}
