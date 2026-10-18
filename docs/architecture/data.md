@@ -169,10 +169,6 @@ space/time for three index builds and torrent updates. Source changes subsequent
 recompute only that infohash's maximum. GORM generation excludes the operational
 columns, preventing generic upserts from resetting them.
 
-Migration `00030` adds a nullable `scraped_at` to `torrents_torrent_sources`: when the row's
-peer counts were observed. It is a catalogue-only change with no backfill, so existing counts
-stay undated until they are scraped again, and the upgrade costs no table rewrite.
-
 `enhancement_claims` contains active leases only. `enhancement_daily_spending` stores
 UTC-day totals; `enhancement_reservations` stores expiring live per-request reservation tokens
 so only known usage can refund a charge once. Unknown charges survive crashes.
@@ -180,3 +176,7 @@ Authentication pause and the next admission group use existing `key_values` entr
 Attempt fingerprints on `classification_evaluations` suppress exhausted failures
 without replacing completed/accepted state. These operational tables are excluded
 from catalogue exports. They are not a full evaluation history.
+
+Migration `00030` adds a nullable `scraped_at` to `torrents_torrent_sources`: when the row's
+peer counts were observed. It is a catalogue-only change with no backfill, so existing counts
+stay undated until they are scraped again, and the upgrade costs no table rewrite.

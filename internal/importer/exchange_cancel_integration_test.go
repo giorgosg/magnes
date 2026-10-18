@@ -17,15 +17,9 @@ type importResult struct {
 	err    error
 }
 
-// startImport runs an import of src in the background, one record per batch unless a
-// batch size is given.
-func startImport(ctx context.Context, db *dbtest.DB, src io.Reader, batchSize ...int) <-chan importResult {
+// startImport runs an import of src in the background, size records per batch.
+func startImport(ctx context.Context, db *dbtest.DB, src io.Reader, size int) <-chan importResult {
 	done := make(chan importResult, 1)
-	size := 1
-
-	if len(batchSize) > 0 {
-		size = batchSize[0]
-	}
 
 	go func() {
 		report, err := importer.NewExchangeImporter(db.Gorm, nil, importer.ExchangeConfig{
@@ -63,7 +57,7 @@ func TestExchangeImportReturnsWhenCancelledWhileWaitingForInput(t *testing.T) {
 
 	t.Cleanup(func() { _ = input.Close() })
 
-	done := startImport(ctx, db, src)
+	done := startImport(ctx, db, src, 1)
 
 	go func() {
 		_, _ = io.WriteString(input, exchangeHeader+"\n"+`{"infoHash":"`+hashHex(1)+`","name":"First"}`+"\n")
@@ -104,7 +98,7 @@ func TestExchangeImportReturnsWhenCancelledWhileItsBatchWaits(t *testing.T) {
 	done := startImport(ctx, db, exchangeFile(
 		`{"infoHash":"`+hashHex(1)+`","name":"First"}`,
 		`{"infoHash":"`+hashHex(2)+`","name":"Contended","sources":[{"source":"dht","seeders":1}]}`,
-	))
+	), 1)
 
 	// The first batch commits before the second waits. Waiting for its row first matters:
 	// a commit can itself wait briefly on a lock, the cluster-wide one NOTIFY takes.

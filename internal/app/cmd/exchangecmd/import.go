@@ -195,7 +195,10 @@ func (b *shutdownBound) action(run func(context.Context, *cli.Context) error) cl
 		// closing, can arrive just before the stop hook cancels the context. Only an
 		// ExitCoder sets an exit code, so any other error becomes one.
 		var coder cli.ExitCoder
-		if !errors.As(err, &coder) {
+		if errors.As(err, &coder) {
+			// HandleExitCoder checks the type directly, so a wrapped ExitCoder is unwrapped.
+			err = coder
+		} else {
 			err = cli.Exit(err.Error(), exitFatal)
 		}
 

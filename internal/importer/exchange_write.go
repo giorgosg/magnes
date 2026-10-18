@@ -349,10 +349,15 @@ const (
 // transaction, which holds the moderation lock of every infohash in it until commit. The
 // crawler takes the same locks, so the two never write one torrent at the same time; the
 // merge rules are still enforced in SQL, so they hold against any other writer too.
+//
+// planned holds what planning already counted, the records skipped before any write; each
+// attempt starts from it afresh.
 func (i *ExchangeImporter) commitBatch(
 	ctx context.Context, plans []recordPlan, evidence []moderation.Evidence, options ExchangeOptions,
-	result batchResult,
+	planned batchResult,
 ) (batchResult, error) {
+	result := planned
+
 	ledger := moderation.NewService(i.db)
 	for _, observed := range evidence {
 		if _, err := i.keywordPolicy.Apply(ctx, ledger, observed); err != nil {
@@ -471,17 +476,22 @@ func (w batchWriter) write(plans []recordPlan, options ExchangeOptions, result *
 
 	changed := make(hashSet)
 
+	// Sources go before files. The source write fires enhancement_source_rank, which takes
+	// FOR UPDATE on the torrent; the file fill's UPDATE takes NO KEY UPDATE. Taken the other
+	// way round, the lock is upgraded while a scheduler claim can hold KEY SHARE and be
+	// waiting to update the same torrent: a deadlock. This way nothing is upgraded after
+	// FOR UPDATE.
+	sourcesChanged, err := w.writeSources(plans)
+	if err != nil {
+		return err
+	}
+
 	filled, err := w.fillFiles(plans, created)
 	if err != nil {
 		return err
 	}
 
 	filesAdded, err := w.insertFiles(plans, created, filled)
-	if err != nil {
-		return err
-	}
-
-	sourcesChanged, err := w.writeSources(plans)
 	if err != nil {
 		return err
 	}

@@ -33,7 +33,7 @@ func holdRow(t *testing.T, db *dbtest.DB, sql string, args ...any) pgx.Tx {
 func importWhileHeld(t *testing.T, db *dbtest.DB, holder pgx.Tx, records ...string) importResult {
 	t.Helper()
 
-	done := startImport(t.Context(), db, exchangeFile(records...))
+	done := startImport(t.Context(), db, exchangeFile(records...), 1)
 
 	waitForLockWaits(t, db, 1, "the import should wait for the concurrent write")
 
@@ -210,17 +210,35 @@ const lockWaits = `SELECT count(*) FROM pg_stat_activity WHERE datname = $1 AND 
 func TestExchangeImportDoesNotDeadlockWithTheEnhancementScheduler(t *testing.T) {
 	t.Parallel()
 
+	for name, record := range map[string]string{
+		"a source": `{"infoHash":"` + hashHex(1) + `","name":"x","sources":[{"source":"dht","seeders":1}]}`,
+		// Filling the file list updates the torrent row. Done before the source write, it
+		// would hold NO KEY UPDATE when the trigger asks for FOR UPDATE.
+		"a source and a file list to fill": `{"infoHash":"` + hashHex(1) + `","name":"x",
+"files":[{"index":0,"path":"a","size":4},{"index":1,"path":"b","size":6}],
+"sources":[{"source":"dht","seeders":1}]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			importBesideTheScheduler(t, record)
+		})
+	}
+}
+
+// importBesideTheScheduler imports one record for an existing torrent while the
+// scheduler claims and updates that torrent, and fails on a deadlock either way round.
+func importBesideTheScheduler(t *testing.T, record string) {
+	t.Helper()
+
 	db := dbtest.New(t)
 	hash := protocol.ID{1}
 	seedTorrent(t, db, hash, "Contended", 10, false, "no_info")
 
-	// Pause the import after it has locked the torrent and before it writes the source,
-	// on the torrent_sources row it is about to create.
+	// Pause the import on the torrent_sources row its source write is about to create.
 	pause := holdRow(t, db, `INSERT INTO torrent_sources (key,name,created_at,updated_at)
 VALUES ('alice:dht','alice:dht',now(),now())`)
 
-	done := startImport(t.Context(), db, exchangeFile(
-		`{"infoHash":"`+hashHex(1)+`","name":"x","sources":[{"source":"dht","seeders":1}]}`))
+	done := startImport(t.Context(), db, exchangeFile(record), 1)
 
 	waitForLockWaits(t, db, 1, "the import should wait on the paused source key")
 
@@ -276,7 +294,7 @@ func TestExchangeImportRetriesABatchAbortedByADeadlock(t *testing.T) {
 VALUES ('alice:dht','alice:dht',now(),now())`)
 
 	done := startImport(t.Context(), db, exchangeFile(
-		`{"infoHash":"`+hashHex(1)+`","name":"x","sources":[{"source":"dht","seeders":7}]}`))
+		`{"infoHash":"`+hashHex(1)+`","name":"x","sources":[{"source":"dht","seeders":7}]}`), 1)
 
 	waitForLockWaits(t, db, 1, "the import should wait on the uncommitted source key")
 
