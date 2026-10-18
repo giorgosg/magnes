@@ -97,6 +97,7 @@ Catalogue SQL exports apply the same policy and retain only visible relationship
 Metadata source definitions include dependencies used only by visible torrent hints;
 unassociated definitions are preserved, while sources used solely by hidden rows are excluded.
 They are distinct from full administrative database backups.
+The exchange-file `export` command reads through the same `VisibleInfoHash` rule.
 
 ## Migrations
 

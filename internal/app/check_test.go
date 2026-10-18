@@ -67,3 +67,16 @@ func TestCheckRunsWithoutADatabase(t *testing.T) {
 	_, err := db.Get()
 	require.ErrorIs(t, err, errDatabaseOpened)
 }
+
+func TestExportIsRegistered(t *testing.T) {
+	t.Parallel()
+
+	var cliApp *cli.App
+
+	app := fx.New(appfx.New(), fx.NopLogger, fx.Populate(&cliApp))
+	require.NoError(t, app.Err())
+
+	command := cliApp.Command("export")
+	require.NotNil(t, command, "the export command is not registered")
+	assert.Equal(t, "<file|->", command.ArgsUsage)
+}

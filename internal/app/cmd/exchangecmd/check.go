@@ -18,7 +18,8 @@ type Result struct {
 	Command *cli.Command `group:"commands"`
 }
 
-// Exit codes: 1 for a file that cannot be read as an exchange file, 2 for a usage error.
+// Exit codes: 1 for a failure, such as a file that cannot be read as an exchange file or an
+// export that could not be written, and 2 for a usage error.
 const (
 	exitFatal = 1
 	exitUsage = 2
