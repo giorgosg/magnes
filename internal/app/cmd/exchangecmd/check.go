@@ -18,6 +18,10 @@ type Result struct {
 	Command *cli.Command `group:"commands"`
 }
 
+// fileArgs is the one argument every exchange command takes: a file, or - for a standard
+// stream.
+const fileArgs = "<file|->"
+
 // Exit codes: 1 for a failure, such as a file that cannot be read as an exchange file or an
 // export that could not be written, and 2 for a usage error.
 const (
@@ -36,7 +40,7 @@ func NewCheck() Result {
 			"fields, nulls, unknown values, invalid source names and invalid entries. It also lists " +
 			"incoming magnes tags. It exits 1 on an unsupported format or major version, or a record " +
 			"before the first header.",
-		ArgsUsage: "<file|->",
+		ArgsUsage: fileArgs,
 		Action:    check,
 	}}
 }
@@ -83,31 +87,8 @@ func open(ctx *cli.Context) (io.Reader, func(), error) {
 func write(w io.Writer, result exchange.CheckResult) error {
 	var out strings.Builder
 
-	fmt.Fprintf(&out, "headers: %d\n", len(result.Headers))
-
-	for _, h := range result.Headers {
-		fmt.Fprintf(&out, "  line %d: %s\n", h.Line, describeHeader(h.Header))
-	}
-
-	fmt.Fprintf(&out, "records: %d\n", result.Records)
-	fmt.Fprintf(&out, "malformed lines: %d\n", len(result.Malformed))
-
-	for _, m := range result.Malformed {
-		fmt.Fprintf(&out, "  line %d: %v\n", m.Line, m.Err)
-	}
-
-	for _, section := range []struct {
-		title  string
-		reason exchange.Reason
-	}{
-		{"unknown fields", exchange.ReasonUnknownField},
-		{"nulls", exchange.ReasonNull},
-		{"unknown values", exchange.ReasonUnknownValue},
-		{"invalid source names", exchange.ReasonInvalidSourceName},
-		{"invalid entries", exchange.ReasonInvalidEntry},
-	} {
-		writeSection(&out, section.title, section.reason, result.Dropped)
-	}
+	writeStream(&out, result.Headers, result.Records, result.Malformed)
+	writeSections(&out, readerSections, result.Dropped)
 
 	if len(result.Tags) == 0 {
 		out.WriteString("tags: none\n")
@@ -122,6 +103,45 @@ func write(w io.Writer, result exchange.CheckResult) error {
 	_, err := io.WriteString(w, out.String())
 
 	return err
+}
+
+// dropSection titles the report lines for one reason something was dropped.
+type dropSection struct {
+	title  string
+	reason exchange.Reason
+}
+
+// readerSections are the reasons the reader drops something, in report order.
+var readerSections = []dropSection{
+	{"unknown fields", exchange.ReasonUnknownField},
+	{"nulls", exchange.ReasonNull},
+	{"unknown values", exchange.ReasonUnknownValue},
+	{"invalid source names", exchange.ReasonInvalidSourceName},
+	{"invalid entries", exchange.ReasonInvalidEntry},
+}
+
+// writeStream reports what was read: each header, the record count and malformed lines.
+func writeStream(
+	out *strings.Builder, headers []exchange.CheckedHeader, records int, malformed []exchange.MalformedLineError,
+) {
+	fmt.Fprintf(out, "headers: %d\n", len(headers))
+
+	for _, h := range headers {
+		fmt.Fprintf(out, "  line %d: %s\n", h.Line, describeHeader(h.Header))
+	}
+
+	fmt.Fprintf(out, "records: %d\n", records)
+	fmt.Fprintf(out, "malformed lines: %d\n", len(malformed))
+
+	for _, m := range malformed {
+		fmt.Fprintf(out, "  line %d: %v\n", m.Line, m.Err)
+	}
+}
+
+func writeSections(out *strings.Builder, sections []dropSection, dropped []exchange.ReportEntry) {
+	for _, section := range sections {
+		writeSection(out, section.title, section.reason, dropped)
+	}
 }
 
 func writeSection(out *strings.Builder, title string, reason exchange.Reason, dropped []exchange.ReportEntry) {

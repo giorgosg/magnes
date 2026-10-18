@@ -79,7 +79,7 @@ run as a set of registered workers.
 | `internal/torznab/`     | Torznab/Newznab indexer API — the \*arr surface                                |
 | `internal/httpserver/`  | gin engine, middleware, option registration                                    |
 | `internal/auth/`        | Identity, RBAC, API keys, JWT, users — see [auth.md](auth.md)                  |
-| `internal/importer/`    | Bulk import path, used by external importers                                   |
+| `internal/importer/`    | Exchange-file import, and the legacy `/import` path                            |
 | `internal/exchange/`    | Exchange-file reader and writer — see [exchange-file.md](../exchange-file.md)  |
 | `internal/moderation/`  | Exact decisions, keyword quarantine and catalogue visibility                   |
 | `internal/health/`      | Health checks reported over GraphQL                                            |
@@ -87,7 +87,7 @@ run as a set of registered workers.
 | `internal/concurrency/` | Batching channels, buffered concurrent channels, keyed limiters                |
 | `internal/lazy/`        | `lazy.Lazy[T]`, how fx factories defer expensive construction                  |
 | `pkg/json_schema/`      | JSON schema types, used by `internal/config/param`                             |
-| `migrations/`           | Goose SQL migrations, `00001`–`00029`                                          |
+| `migrations/`           | Goose SQL migrations, `00001`–`00030`                                          |
 | `graphql/`              | Schema and operations — the _source_ for `internal/gql`                        |
 
 The `static` HTTP component serves the bundled Elm UI by default in release builds,

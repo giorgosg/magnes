@@ -132,6 +132,8 @@ type infoHashWithScrape struct {
 	nodeHasPeersForHash
 	bfsd bloom.Filter
 	bfpe bloom.Filter
+	// scrapedAt is when the scrape response arrived: when the counts were observed.
+	scrapedAt time.Time
 }
 
 type ignoreHashes struct {

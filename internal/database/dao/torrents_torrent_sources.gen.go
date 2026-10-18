@@ -36,6 +36,7 @@ func newTorrentsTorrentSource(db *gorm.DB, opts ...gen.DOOption) torrentsTorrent
 	_torrentsTorrentSource.PublishedAt = field.NewField(tableName, "published_at")
 	_torrentsTorrentSource.CreatedAt = field.NewTime(tableName, "created_at")
 	_torrentsTorrentSource.UpdatedAt = field.NewTime(tableName, "updated_at")
+	_torrentsTorrentSource.ScrapedAt = field.NewField(tableName, "scraped_at")
 	_torrentsTorrentSource.TorrentSource = torrentsTorrentSourceHasOneTorrentSource{
 		db: db.Session(&gorm.Session{}),
 
@@ -59,6 +60,7 @@ type torrentsTorrentSource struct {
 	PublishedAt   field.Field
 	CreatedAt     field.Time
 	UpdatedAt     field.Time
+	ScrapedAt     field.Field
 	TorrentSource torrentsTorrentSourceHasOneTorrentSource
 
 	fieldMap map[string]field.Expr
@@ -84,6 +86,7 @@ func (t *torrentsTorrentSource) updateTableName(table string) *torrentsTorrentSo
 	t.PublishedAt = field.NewField(table, "published_at")
 	t.CreatedAt = field.NewTime(table, "created_at")
 	t.UpdatedAt = field.NewTime(table, "updated_at")
+	t.ScrapedAt = field.NewField(table, "scraped_at")
 
 	t.fillFieldMap()
 
@@ -100,7 +103,7 @@ func (t *torrentsTorrentSource) GetFieldByName(fieldName string) (field.OrderExp
 }
 
 func (t *torrentsTorrentSource) fillFieldMap() {
-	t.fieldMap = make(map[string]field.Expr, 9)
+	t.fieldMap = make(map[string]field.Expr, 10)
 	t.fieldMap["source"] = t.Source
 	t.fieldMap["info_hash"] = t.InfoHash
 	t.fieldMap["import_id"] = t.ImportID
@@ -109,6 +112,7 @@ func (t *torrentsTorrentSource) fillFieldMap() {
 	t.fieldMap["published_at"] = t.PublishedAt
 	t.fieldMap["created_at"] = t.CreatedAt
 	t.fieldMap["updated_at"] = t.UpdatedAt
+	t.fieldMap["scraped_at"] = t.ScrapedAt
 
 }
 

@@ -111,3 +111,45 @@ func TestPersistSourceBatchWaitsForInFlightTorrentDelete(t *testing.T) {
 	require.Len(t, sources, 1, "the in-flight delete must cost only its own row")
 	require.Equal(t, kept, sources[0].InfoHash)
 }
+
+// The counts a scrape writes are dated by when it observed them, so a later import can
+// tell whether its own counts are newer. Each scrape moves the date with the counts.
+func TestPersistSourceBatchDatesTheCounts(t *testing.T) {
+	t.Parallel()
+
+	db := dbtest.New(t)
+	ctx := t.Context()
+	hash := protocol.ID{121}
+
+	require.NoError(t, db.Query.Torrent.WithContext(ctx).Create(&model.Torrent{
+		InfoHash: hash, Name: "Synthetic release", FilesStatus: model.FilesStatusSingle,
+	}))
+
+	filter := *bloom.NewWithEstimates(100, 0.01)
+	filter.Add([]byte("peer"))
+
+	scrapedAt := func() time.Time {
+		var at time.Time
+		require.NoError(t, db.Gorm.Raw(
+			"SELECT scraped_at FROM torrents_torrent_sources WHERE info_hash = ? AND source = ?",
+			hash,
+			dhtSource,
+		).Scan(&at).Error)
+
+		return at.UTC()
+	}
+
+	first := time.Date(2026, 10, 1, 3, 0, 0, 0, time.UTC)
+	second := time.Date(2026, 10, 17, 3, 12, 44, 0, time.UTC)
+
+	crawler := newPersistTestCrawler(db.Query, 0)
+	crawler.persistSourceBatch(ctx, []infoHashWithScrape{{
+		nodeHasPeersForHash: nodeHasPeersForHash{infoHash: hash}, bfsd: filter, bfpe: filter, scrapedAt: first,
+	}})
+	require.Equal(t, first, scrapedAt())
+
+	crawler.persistSourceBatch(ctx, []infoHashWithScrape{{
+		nodeHasPeersForHash: nodeHasPeersForHash{infoHash: hash}, bfsd: filter, bfpe: filter, scrapedAt: second,
+	}})
+	require.Equal(t, second, scrapedAt(), "a rescrape dates its new counts")
+}

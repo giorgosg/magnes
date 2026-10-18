@@ -109,7 +109,9 @@ database, and it does more than its name suggests:
   every 30 s.
 
 `createTorrentSourceModel` derives seeders and leechers from the BEP 33 scrape bloom
-filters' `ApproximatedSize()` — they are estimates, not counts.
+filters' `ApproximatedSize()` — they are estimates, not counts. It dates them in
+`scraped_at` with the time the scrape response arrived, so an import can tell whether its
+own counts are newer.
 
 `writeEligibleSourceBatch` writes those counts as an upsert on `torrents_torrent_sources`.
 A torrent can be deleted between triage and that write, and its foreign key would reject
@@ -118,6 +120,44 @@ the whole batch, so the write first selects the batch's surviving `torrents` row
 anyway; taking it first means a delete still in flight is waited for and then skipped,
 rather than failing the insert. GORM silently drops a `Where` on `Create` with
 `OnConflict`, which is why this is not a `WHERE EXISTS` guard on the insert.
+
+## Exchange-file imports
+
+The other writer to the catalogue is the exchange-file import, `ExchangeImporter` in
+`internal/importer/exchange*.go`, behind the CLI `import`. The merge rules are in
+[exchange-file.md](../exchange-file.md). This section covers how it meets the crawler.
+
+- **Source rows never collide.** Every imported source is stored as
+  `<origin>:<source>` ([ADR 0010](../adr/0010-prefix-imported-sources-with-their-origin.md)),
+  so an import never writes a `dht` row, and the crawler never writes a prefixed one.
+- **They share a torrent row.** Each batch goes through `moderation.Service.Ingest`, as
+  the crawler's batches do. It holds every infohash's moderation lock until commit, so
+  a crawler batch and an import batch never write one torrent at the same time.
+- **The rules are SQL conditions,** not read-then-write: `INSERT … ON CONFLICT` and
+  `UPDATE … WHERE`. They hold against any writer that does not take those locks.
+  - A file list is taken only `WHERE files_status IN ('no_info', 'over_threshold')`.
+  - Peer counts merge inside the upsert.
+  - Name, size and private are written only by the insert of a new torrent.
+- **The batch's torrents are locked first, in infohash order,** as the crawler's source
+  write does. The first statement inserts the new torrents, `ON CONFLICT DO NOTHING`.
+  The second takes `FOR KEY SHARE` on all of them, so no foreign key fails later in the
+  batch. A delete that began before the insert makes the insert wait, and the record is
+  then written as a new torrent. A delete that commits between the two statements leaves
+  the torrent out of the lock: it is skipped and counted.
+  - Nothing may take a lock on the torrent that the source write then has to upgrade. The
+    source write fires `enhancement_source_rank`, which takes `FOR UPDATE`. An import that
+    already held `NO KEY UPDATE` would deadlock with the enhancement scheduler's claim:
+    the claim holds `KEY SHARE`, then waits to update the torrent.
+  - So the batch takes no stronger lock than `KEY SHARE` up front. It also writes sources
+    before it updates a torrent's file list.
+- **A batch aborted with `40P01` or `40001` is retried,** up to three attempts. Writers
+  that take no moderation lock, such as the classifier's deletes and the enhancement
+  scheduler's maintenance, lock torrents in their own order, so a deadlock with them is
+  still possible. An aborted batch wrote nothing, and the merge rules make a rewrite
+  idempotent.
+- **Cancellation** cancels the batch's queries. pgx closes the connection, the backend
+  rolls back, and the import returns at once. Reading runs on its own goroutine, so an
+  import stalled on its input still stops.
 
 ## Starting and stopping
 

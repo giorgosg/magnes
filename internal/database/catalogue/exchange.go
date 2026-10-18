@@ -268,11 +268,13 @@ func (p exchangePage) readFiles(ctx context.Context, listed [][]byte) error {
 
 // readSources writes one entry per stored source, under its normalised name, and dates
 // the record by the earliest publication any source knows of. An unknown peer count
-// stays absent rather than becoming 0. Rows arrive newest first, which mergeSource
-// relies on.
+// stays absent rather than becoming 0, and scraped_at travels as the scrapedAt of the
+// counts it dates. Rows arrive most recently scraped first, then most recently updated,
+// which mergeSource relies on.
 func (p exchangePage) readSources(ctx context.Context) error {
-	rows, err := p.tx.Query(ctx, `SELECT info_hash, source, seeders, leechers, published_at
- FROM torrents_torrent_sources WHERE info_hash = ANY($1) ORDER BY info_hash, updated_at DESC, source`, p.hashes)
+	rows, err := p.tx.Query(ctx, `SELECT info_hash, source, seeders, leechers, published_at, scraped_at
+ FROM torrents_torrent_sources WHERE info_hash = ANY($1)
+ ORDER BY info_hash, scraped_at DESC NULLS LAST, updated_at DESC, source`, p.hashes)
 	if err != nil {
 		return fmt.Errorf("read sources: %w", err)
 	}
@@ -280,13 +282,13 @@ func (p exchangePage) readSources(ctx context.Context) error {
 
 	for rows.Next() {
 		var (
-			hash              []byte
-			stored            string
-			seeders, leechers *int64
-			publishedAt       *time.Time
+			hash                   []byte
+			stored                 string
+			seeders, leechers      *int64
+			publishedAt, scrapedAt *time.Time
 		)
 
-		if err = rows.Scan(&hash, &stored, &seeders, &leechers, &publishedAt); err != nil {
+		if err = rows.Scan(&hash, &stored, &seeders, &leechers, &publishedAt, &scrapedAt); err != nil {
 			return fmt.Errorf("read sources: %w", err)
 		}
 
@@ -298,6 +300,10 @@ func (p exchangePage) readSources(ctx context.Context) error {
 		}
 
 		source := exchange.Source{Name: name, Seeders: peerCount(seeders), Leechers: peerCount(leechers)}
+
+		if scrapedAt != nil {
+			source.ScrapedAt = model.MaybeValid(scrapedAt.UTC())
+		}
 
 		if publishedAt != nil {
 			source.PublishedAt = model.MaybeValid(publishedAt.UTC())
@@ -324,8 +330,9 @@ func (p exchangePage) readSources(ctx context.Context) error {
 // mergeSource adds a source row to a record's entries. Two stored names can normalise to
 // one, such as "Torrents CSV" and "torrents-csv", and a file has one entry per source.
 // The merge follows the import's rules: the earliest publication wins, a known count is
-// never replaced by an unknown one, and otherwise the newer observation wins. Seeders
-// and leechers were observed together, so they travel as a pair from one row.
+// never replaced by an unknown one, and otherwise the newer observation wins. Seeders,
+// leechers and the scrapedAt dating them were observed together, so they travel as one
+// from the first row that has a count.
 func mergeSource(entries []exchange.Source, source exchange.Source) []exchange.Source {
 	i := slices.IndexFunc(entries, func(e exchange.Source) bool { return e.Name == source.Name })
 	if i < 0 {
@@ -336,6 +343,7 @@ func mergeSource(entries []exchange.Source, source exchange.Source) []exchange.S
 
 	if !merged.Seeders.Valid && !merged.Leechers.Valid {
 		merged.Seeders, merged.Leechers = source.Seeders, source.Leechers
+		merged.ScrapedAt = source.ScrapedAt
 	}
 
 	merged.PublishedAt = earliest(merged.PublishedAt, source.PublishedAt)

@@ -28,8 +28,8 @@ in every signature in the tree.
 | `torrents`                                                                             | infohash, name, size, private, files_status, files_count                                             |
 | `torrent_files`                                                                        | one row per stored file, capped by `SaveFilesThreshold`                                              |
 | `torrent_pieces`                                                                       | piece hashes, only when `SavePieces` is on                                                           |
-| `torrent_sources`                                                                      | the catalogue of sources (`dht`, importer names)                                                     |
-| `torrents_torrent_sources`                                                             | per-source seeders, leechers, published_at, import_id                                                |
+| `torrent_sources`                                                                      | the catalogue of sources: `dht`, legacy importer names, `<origin>:<source>` from imports             |
+| `torrents_torrent_sources`                                                             | per-source seeders, leechers, scraped_at (when the counts were observed), published_at, import_id    |
 | `torrent_hints`                                                                        | externally supplied classification hints from importers                                              |
 | `torrent_tags`                                                                         | free-form tags                                                                                       |
 | `torrent_contents`                                                                     | the search table: effective classification, inferred title/year fallbacks and `tsv` full-text vector |
@@ -103,7 +103,7 @@ The exchange-file `export` command reads through the same `VisibleInfoHash` rule
 
 Goose SQL in [`migrations/`](../../migrations), embedded and run through
 `internal/database/migrations` — an fx decorator, so they apply before anything queries.
-Current high-water mark is `00029_enhancement_scheduling.sql`; `ls migrations/` rather than trusting this
+Current high-water mark is `00030_source_scraped_at.sql`; `ls migrations/` rather than trusting this
 sentence.
 
 **Forks number theirs independently and the numbers collide.** Anything cherry-picked gets
@@ -176,3 +176,7 @@ Authentication pause and the next admission group use existing `key_values` entr
 Attempt fingerprints on `classification_evaluations` suppress exhausted failures
 without replacing completed/accepted state. These operational tables are excluded
 from catalogue exports. They are not a full evaluation history.
+
+Migration `00030` adds a nullable `scraped_at` to `torrents_torrent_sources`: when the row's
+peer counts were observed. It is a catalogue-only change with no backfill, so existing counts
+stay undated until they are scraped again, and the upgrade costs no table rewrite.

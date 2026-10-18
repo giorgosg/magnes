@@ -10,9 +10,23 @@ import (
 var ErrInvalidSourceName = errors.New("invalid source name")
 
 var (
+	labelPattern      = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
 	sourceNamePattern = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*(:[a-z0-9]+(-[a-z0-9]+)*)*$`)
 	nonLabelRun       = regexp.MustCompile(`[^a-z0-9]+`)
 )
+
+// ValidOriginLabel reports whether label can name an import's origin: one lowercase
+// kebab-case segment, such as alice. An import stores each incoming source as
+// <origin>:<source>, so the chain of origins accumulates one segment per hop.
+func ValidOriginLabel(label string) bool {
+	return labelPattern.MatchString(label)
+}
+
+// PrefixSourceName stores an incoming source under an import's origin: dht from alice
+// becomes alice:dht, and bob:dht becomes alice:bob:dht.
+func PrefixSourceName(origin, source string) string {
+	return origin + ":" + source
+}
 
 // ValidSourceName reports whether name follows the label rule: lowercase kebab-case
 // segments joined by ':', such as dht or alice:bob:torrents-csv.

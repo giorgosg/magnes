@@ -94,6 +94,7 @@ func BuildGenerator(db *gorm.DB) *gen.Generator {
 		gen.FieldType("seeders", "NullUint"),
 		gen.FieldType("leechers", "NullUint"),
 		gen.FieldType("published_at", "sql.NullTime"),
+		gen.FieldType("scraped_at", "sql.NullTime"),
 		gen.FieldRelate(
 			field.HasOne,
 			"TorrentSource",

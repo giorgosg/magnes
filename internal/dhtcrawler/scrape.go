@@ -21,6 +21,7 @@ func (c *crawler) runScrape(ctx context.Context) {
 			nodeHasPeersForHash: req,
 			bfsd:                pfh.bfsd,
 			bfpe:                pfh.bfpe,
+			scrapedAt:           pfh.scrapedAt,
 		}:
 		}
 	})
@@ -33,6 +34,8 @@ func (c *crawler) requestScrape(
 	req nodeHasPeersForHash,
 ) (infoHashWithScrape, error) {
 	res, err := c.client.GetPeersScrape(ctx, req.node, req.infoHash)
+	observedAt := time.Now()
+
 	if err != nil {
 		c.kTable.BatchCommand(ktable.DropAddr{
 			Addr:   req.node.Addr(),
@@ -68,5 +71,6 @@ func (c *crawler) requestScrape(
 		nodeHasPeersForHash: req,
 		bfsd:                res.BfSeeders,
 		bfpe:                res.BfPeers,
+		scrapedAt:           observedAt,
 	}, nil
 }
