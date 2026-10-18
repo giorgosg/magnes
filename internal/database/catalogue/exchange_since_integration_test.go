@@ -1,14 +1,18 @@
 package catalogue_test
 
 import (
+	"bytes"
+	"context"
 	"testing"
 	"time"
 
 	"github.com/bitmagnet-io/bitmagnet/internal/database/catalogue"
 	"github.com/bitmagnet-io/bitmagnet/internal/database/dbtest"
+	"github.com/bitmagnet-io/bitmagnet/internal/exchange"
 	"github.com/bitmagnet-io/bitmagnet/internal/model"
 	"github.com/bitmagnet-io/bitmagnet/internal/moderation"
 	"github.com/bitmagnet-io/bitmagnet/internal/protocol"
+	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/require"
 )
 
@@ -188,6 +192,43 @@ SELECT info_hash, 'movie', $1, $1 FROM torrents WHERE get_byte(info_hash, 19) % 
 
 	out := exportExchange(t, db, catalogue.ExchangeOptions{Since: model.MaybeValid(since), PageSize: 10})
 	require.Equal(t, want, out.order)
+}
+
+// An incremental export keeps memory flat too: every fetch from its cursor returns at most
+// a page, however many torrents changed.
+func TestExchangeExportSinceFetchesAPageAtATime(t *testing.T) {
+	t.Parallel()
+
+	const (
+		torrents = 2500
+		pageSize = 100
+	)
+
+	db := dbtest.New(t)
+	exec(t, db, `INSERT INTO torrents (info_hash,name,size,private,created_at,updated_at)
+SELECT decode(lpad(to_hex(i), 40, '0'), 'hex'), 'Torrent ' || i, i, false, $2, $2
+FROM generate_series(1, $1) AS i`, torrents, since)
+
+	config, err := pgx.ParseConfig(db.DSN)
+	require.NoError(t, err)
+
+	counter := &rowCounter{}
+	config.Tracer = counter
+	conn, err := pgx.ConnectConfig(t.Context(), config)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = conn.Close(context.Background()) })
+
+	var output bytes.Buffer
+	require.NoError(t, catalogue.ExportExchange(t.Context(), conn, &output, catalogue.ExchangeOptions{
+		Since:    model.MaybeValid(since),
+		PageSize: pageSize,
+	}))
+
+	result, err := exchange.Check(&output)
+	require.NoError(t, err)
+	require.Equal(t, torrents, result.Records)
+	require.LessOrEqual(t, counter.maxRows, int64(pageSize), "a fetch returned more than one page")
+	require.GreaterOrEqual(t, counter.queries, torrents/pageSize, "the export did not page")
 }
 
 // Tags are insert-only, so a new tag carries its own time. It is a change to the file only
