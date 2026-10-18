@@ -16,13 +16,9 @@ import (
 func VisibleInfoHash(column string) string {
 	return fmt.Sprintf(`NOT EXISTS (
  SELECT 1 FROM moderation_decisions AS moderation_hidden
- WHERE moderation_hidden.identifier = %s
- AND moderation_hidden.status IN ('pending', 'banned'))`, moderationIdentifier(column))
-}
-
-// moderationIdentifier is the ledger identifier of the infohash in column.
-func moderationIdentifier(column string) string {
-	return fmt.Sprintf(`encode(sha256(convert_to('magnes:moderation:v1:btih:', 'UTF8') || %s), 'hex')`, column)
+ WHERE moderation_hidden.identifier = encode(sha256(
+ convert_to('magnes:moderation:v1:btih:', 'UTF8') || %s), 'hex')
+ AND moderation_hidden.status IN ('pending', 'banned'))`, column)
 }
 
 // VisibleContent hides metadata backed solely by hidden torrents, preserving
