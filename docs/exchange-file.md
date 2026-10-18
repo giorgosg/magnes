@@ -325,8 +325,8 @@ once the export has succeeded, so a failed export leaves any previous file intac
     index or peer count above 2³¹−1;
   - its torrent is deleted locally while the record's batch is being written.
 - **Classification:** new and changed torrents are queued for classification.
-- **Batches:** the import commits every 100 records, each batch in one transaction under
-  the same moderation locks the crawler takes. Every merge rule is a condition of the SQL
+- **Batches:** the import commits every 100 records, or sooner once their lines total
+  4 MiB, each batch in one transaction under the same moderation locks the crawler takes. Every merge rule is a condition of the SQL
   write itself, so it holds against whatever another writer committed first. A batch
   that PostgreSQL aborts to break a deadlock is written again, up to three attempts.
 - **Interruption:** Ctrl-C or SIGTERM stops the import mid-file. The batch in flight is

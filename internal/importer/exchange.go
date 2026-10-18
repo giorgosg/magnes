@@ -21,6 +21,11 @@ var ErrInvalidOrigin = errors.New("invalid origin label")
 // those locks, so a batch is kept small.
 const DefaultExchangeBatchSize = 100
 
+// DefaultExchangeBatchBytes also cuts a batch, once its lines total this many bytes. A
+// decoded record can take ten times its line in memory, so a count alone let a batch of
+// large lines hold the best part of a gigabyte.
+const DefaultExchangeBatchBytes = 4 << 20
+
 // ExchangeConfig is how this instance stores what it imports.
 type ExchangeConfig struct {
 	// FilesThreshold is the crawler's SaveFilesThreshold: no more file rows than this are
@@ -29,6 +34,9 @@ type ExchangeConfig struct {
 	// BatchSize is how many records one transaction writes. Zero means
 	// DefaultExchangeBatchSize.
 	BatchSize int
+	// BatchBytes cuts a batch once its lines total this many bytes. Zero means
+	// DefaultExchangeBatchBytes.
+	BatchBytes int
 }
 
 // ExchangeOptions are the choices one import makes.
@@ -57,6 +65,10 @@ func NewExchangeImporter(
 ) *ExchangeImporter {
 	if config.BatchSize <= 0 {
 		config.BatchSize = DefaultExchangeBatchSize
+	}
+
+	if config.BatchBytes <= 0 {
+		config.BatchBytes = DefaultExchangeBatchBytes
 	}
 
 	return &ExchangeImporter{db: db, keywordPolicy: keywordPolicy, config: config}
@@ -139,7 +151,8 @@ func (i *ExchangeImporter) Import(
 
 	defer close(done)
 
-	go readBatches(exchange.NewLimitedReader(src, options.Limits), i.config.BatchSize, batches, done)
+	go readBatches(exchange.NewLimitedReader(src, options.Limits), i.config.BatchSize, i.config.BatchBytes, batches,
+		done)
 
 	var (
 		report  ExchangeReport
@@ -198,11 +211,15 @@ func (i *ExchangeImporter) Import(
 	}
 }
 
-// readBatches cuts the stream into batches. A batch never holds one infohash twice, so a
-// repeated record is written after the earlier one, as if the file were read one record
-// at a time. It stops at the end of the stream, on a fatal error, or when done closes.
-func readBatches(reader *exchange.Reader, size int, out chan<- readBatch, done <-chan struct{}) {
-	var batch readBatch
+// readBatches cuts the stream into batches of at most size records, cut sooner once their
+// lines total maxBytes. A batch never holds one infohash twice, so a repeated record is
+// written after the earlier one, as if the file were read one record at a time. It stops
+// at the end of the stream, on a fatal error, or when done closes.
+func readBatches(reader *exchange.Reader, size, maxBytes int, out chan<- readBatch, done <-chan struct{}) {
+	var (
+		batch      readBatch
+		batchBytes int
+	)
 
 	seen := make(map[protocol.ID]struct{}, size)
 
@@ -211,7 +228,7 @@ func readBatches(reader *exchange.Reader, size int, out chan<- readBatch, done <
 
 		select {
 		case out <- batch:
-			batch = readBatch{}
+			batch, batchBytes = readBatch{}, 0
 
 			clear(seen)
 
@@ -253,9 +270,10 @@ func readBatches(reader *exchange.Reader, size int, out chan<- readBatch, done <
 		}
 
 		batch.records = append(batch.records, *line.Record)
+		batchBytes += line.Bytes
 		seen[line.Record.InfoHash] = struct{}{}
 
-		if len(batch.records) >= size && !send(false, nil) {
+		if (len(batch.records) >= size || batchBytes >= maxBytes) && !send(false, nil) {
 			return
 		}
 	}

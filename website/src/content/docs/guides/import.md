@@ -60,9 +60,9 @@ The response is the import's report as JSON: the headers read, the record count,
 malformed lines with their line numbers, new, updated, unchanged, banned and skipped
 torrents, hints written and kept, tags added, and every dropped field or value with its
 count. A status other than `200` carries an `error`; the counts then cover what was
-committed before the import stopped. The import commits every 100 records, and importing
-the same file again changes nothing the first import wrote, so a stopped import is resumed
-by sending the file again.
+committed before the import stopped. The import commits in batches of up to 100 records,
+and importing the same file again changes nothing the first import wrote, so a stopped
+import is resumed by sending the file again.
 
 Imported torrents enter the classification queue. They become searchable after
 processing. Watch Queue jobs, then verify a few known names and source filters in the UI.

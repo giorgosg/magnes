@@ -42,6 +42,8 @@ func (e *MalformedLineError) Unwrap() error { return e.Err }
 // Line is one decoded line: a header or a record, never both.
 type Line struct {
 	Number int
+	// Bytes is the length of the line as read, its newline included.
+	Bytes  int
 	Header *Header
 	Record *Record
 }
@@ -98,7 +100,7 @@ func (r *Reader) Next() (Line, error) {
 }
 
 func (r *Reader) decodeLine(data []byte) (Line, error) {
-	line := Line{Number: r.line}
+	line := Line{Number: r.line, Bytes: len(data)}
 
 	n := &notes{scope: ScopeRecord}
 
