@@ -115,6 +115,11 @@ type Stack struct {
 	// against this, so a stack registering half of it would refuse keys
 	// production accepts.
 	ObjectActions []rbac.ObjectAction
+
+	// Guard is the guard production's non-GraphQL endpoints authorize with, over this
+	// stack's authenticator. The stack does not mount those endpoints; a test that needs
+	// one mounts it on Engine with this guard, under the real permission model.
+	Guard http_auth.Guard
 }
 
 // Build assembles the stack. It registers no routes on any listener and starts
@@ -297,6 +302,7 @@ func Build(ctx context.Context, opts Options) (*Stack, error) {
 		RBACService:   rbacService,
 		Search:        searchService,
 		ObjectActions: objectActions,
+		Guard:         http_auth.NewGuard(authenticator),
 	}, nil
 }
 

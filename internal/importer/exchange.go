@@ -42,8 +42,8 @@ type ExchangeOptions struct {
 }
 
 // ExchangeImporter reads exchange files into the catalogue under the merge rules in
-// docs/exchange-file.md. It is the one import code path: the CLI calls it, and the HTTP
-// endpoint is to call it once it reads exchange files.
+// docs/exchange-file.md. It is the one import code path: the CLI import command and
+// POST /import both call it.
 type ExchangeImporter struct {
 	db            *gorm.DB
 	keywordPolicy *moderation.KeywordPolicy

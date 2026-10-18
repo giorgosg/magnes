@@ -6,14 +6,13 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/bitmagnet-io/bitmagnet/internal/auth/authconfig"
-	"github.com/bitmagnet-io/bitmagnet/internal/database/dao"
 	"github.com/bitmagnet-io/bitmagnet/internal/database/dbtest"
 	"github.com/bitmagnet-io/bitmagnet/internal/dev/fixtureserver"
 	"github.com/bitmagnet-io/bitmagnet/internal/importer"
-	"github.com/bitmagnet-io/bitmagnet/internal/lazy"
 	"github.com/bitmagnet-io/bitmagnet/internal/model"
 	"github.com/bitmagnet-io/bitmagnet/internal/moderation"
 	"github.com/bitmagnet-io/bitmagnet/internal/protocol"
@@ -22,7 +21,7 @@ import (
 )
 
 // Both instances and all identifiers are disposable. Source quarantine and allow
-// classification use the real offline classifier; target writes use the real importer.
+// classification use the real offline classifier; target writes use the real exchange importer.
 func TestModerationQuarantineAllowBanExportImportAcrossInstances(t *testing.T) {
 	t.Parallel()
 	sourceDB, targetDB := dbtest.New(t), dbtest.New(t)
@@ -80,35 +79,27 @@ func TestModerationQuarantineAllowBanExportImportAcrossInstances(t *testing.T) {
 		return response.Data
 	}
 	empty := `{"torrentContent":{"search":{"items":[]}}}`
-	factory := func(db *dbtest.DB) importer.Importer {
-		imp, err := importer.New(
-			importer.Params{Dao: lazy.New(func() (*dao.Query, error) { return db.Query, nil })},
-		).Importer.Get()
-		require.NoError(t, err)
-
-		return imp
+	factory := func(db *dbtest.DB) *importer.ExchangeImporter {
+		return importer.NewExchangeImporter(db.Gorm, nil, importer.ExchangeConfig{FilesThreshold: 100})
 	}
 	sourceImporter, targetImporter := factory(sourceDB), factory(targetDB)
-	ingest := func(imp importer.Importer, server *httptest.Server, token, name string, hashes ...protocol.ID) {
-		active := imp.New(t.Context(), importer.Info{})
+	ingest := func(imp *importer.ExchangeImporter, server *httptest.Server, token, name string, hashes ...protocol.ID) {
+		file := `{"format":{"name":"torrent-exchange","version":{"major":1,"minor":0}}}` + "\n"
 		for _, hash := range hashes {
-			require.NoError(
-				t,
-				active.Import(
-					importer.Item{
-						InfoHash:    hash,
-						Source:      "harmless-sharing",
-						Name:        name,
-						Size:        42,
-						ContentType: model.NewNullContentType(model.ContentTypeEbook),
-					},
-				),
-			)
+			record, err := json.Marshal(map[string]any{
+				"infoHash": hash.String(),
+				"name":     name,
+				"size":     42,
+				"sources":  []map[string]any{{"source": "harmless-sharing"}},
+				"magnes":   map[string]any{"classification": map[string]any{"contentType": "ebook"}},
+			})
+			require.NoError(t, err)
+
+			file += string(record) + "\n"
 		}
 
-		active.Drain()
-		require.NoError(t, active.Err())
-		require.NoError(t, active.Close())
+		_, err := imp.Import(t.Context(), strings.NewReader(file), importer.ExchangeOptions{Origin: "peer"})
+		require.NoError(t, err)
 
 		for _, hash := range hashes {
 			response := query(
