@@ -194,41 +194,65 @@ SELECT info_hash, 'movie', $1, $1 FROM torrents WHERE get_byte(info_hash, 19) % 
 	require.Equal(t, want, out.order)
 }
 
-// An incremental export keeps memory flat too: every fetch from its cursor returns at most
-// a page, however many torrents changed.
-func TestExchangeExportSinceFetchesAPageAtATime(t *testing.T) {
+// A table rewrite is not MVCC-safe: a snapshot taken before it commits sees the rewritten
+// table as empty. An export whose snapshot predates a migration it then waits on would
+// exit 0 having silently written nothing, and in a chain of incremental exports that
+// window would never be sent. The export must wait for the rewrite before its snapshot.
+func TestExchangeExportWaitsForATableRewriteBeforeItsSnapshot(t *testing.T) {
 	t.Parallel()
 
-	const (
-		torrents = 2500
-		pageSize = 100
-	)
+	for name, options := range map[string]catalogue.ExchangeOptions{
+		"full":        {},
+		"incremental": {Since: model.MaybeValid(since)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 
-	db := dbtest.New(t)
-	exec(t, db, `INSERT INTO torrents (info_hash,name,size,private,created_at,updated_at)
-SELECT decode(lpad(to_hex(i), 40, '0'), 'hex'), 'Torrent ' || i, i, false, $2, $2
-FROM generate_series(1, $1) AS i`, torrents, since)
+			db := dbtest.New(t)
+			hash := protocol.ID{1}
+			seedSettled(t, db, hash, "Rewritten", since)
 
-	config, err := pgx.ParseConfig(db.DSN)
-	require.NoError(t, err)
+			migration, err := db.Pool.Begin(t.Context())
+			require.NoError(t, err)
 
-	counter := &rowCounter{}
-	config.Tracer = counter
-	conn, err := pgx.ConnectConfig(t.Context(), config)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = conn.Close(context.Background()) })
+			defer func() { _ = migration.Rollback(context.Background()) }()
 
-	var output bytes.Buffer
-	require.NoError(t, catalogue.ExportExchange(t.Context(), conn, &output, catalogue.ExchangeOptions{
-		Since:    model.MaybeValid(since),
-		PageSize: pageSize,
-	}))
+			// A volatile default forces PostgreSQL to rewrite the table.
+			_, err = migration.Exec(t.Context(),
+				`ALTER TABLE torrents ADD COLUMN rewrite_probe double precision DEFAULT random()`)
+			require.NoError(t, err)
 
-	result, err := exchange.Check(&output)
-	require.NoError(t, err)
-	require.Equal(t, torrents, result.Records)
-	require.LessOrEqual(t, counter.maxRows, int64(pageSize), "a fetch returned more than one page")
-	require.GreaterOrEqual(t, counter.queries, torrents/pageSize, "the export did not page")
+			config, err := pgx.ParseConfig(db.DSN)
+			require.NoError(t, err)
+			conn, err := pgx.ConnectConfig(t.Context(), config)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = conn.Close(context.Background()) })
+
+			exportPID := conn.PgConn().PID()
+
+			var output bytes.Buffer
+
+			done := make(chan error, 1)
+
+			go func() { done <- catalogue.ExportExchange(t.Context(), conn, &output, options) }()
+
+			// Commit the rewrite only once the export is blocked on it.
+			require.Eventually(t, func() bool {
+				var waiting bool
+
+				_ = db.Pool.QueryRow(t.Context(), `SELECT EXISTS (SELECT 1 FROM pg_stat_activity
+ WHERE pid = $1 AND wait_event_type = 'Lock')`, exportPID).Scan(&waiting)
+
+				return waiting
+			}, 10*time.Second, 10*time.Millisecond, "the export never waited on the rewrite")
+			require.NoError(t, migration.Commit(t.Context()))
+			require.NoError(t, <-done)
+
+			result, err := exchange.Check(&output)
+			require.NoError(t, err)
+			require.Equal(t, 1, result.Records, "the export read the rewritten table as empty")
+		})
+	}
 }
 
 // Tags are insert-only, so a new tag carries its own time. It is a change to the file only

@@ -421,7 +421,8 @@ func (c *rowCounter) TraceQueryEnd(_ context.Context, _ *pgx.Conn, data pgx.Trac
 // Memory stays flat: the export reads the catalogue in pages, so in this test no query
 // returns more than a page of rows, however many torrents there are. Each torrent here
 // has one source and no files, which bounds every per-page query by the page size; with
-// files, a page holds up to the page size times the file-saving threshold.
+// files, a page holds up to the page size times the file-saving threshold. An
+// incremental export fetches its pages from a cursor, under the same bound.
 func TestExchangeExportPagesThroughTheCatalogue(t *testing.T) {
 	t.Parallel()
 
@@ -439,25 +440,32 @@ ON CONFLICT DO NOTHING`)
 	exec(t, db, `INSERT INTO torrents_torrent_sources (source,info_hash,seeders,created_at,updated_at)
 SELECT 'dht', info_hash, 1, now(), now() FROM torrents`)
 
-	config, err := pgx.ParseConfig(db.DSN)
-	require.NoError(t, err)
+	for name, options := range map[string]catalogue.ExchangeOptions{
+		"full":        {PageSize: pageSize},
+		"incremental": {PageSize: pageSize, Since: model.MaybeValid(since)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 
-	counter := &rowCounter{}
-	config.Tracer = counter
-	conn, err := pgx.ConnectConfig(t.Context(), config)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = conn.Close(context.Background()) })
+			config, err := pgx.ParseConfig(db.DSN)
+			require.NoError(t, err)
 
-	var output bytes.Buffer
-	require.NoError(t, catalogue.ExportExchange(t.Context(), conn, &output, catalogue.ExchangeOptions{
-		PageSize: pageSize,
-	}))
+			counter := &rowCounter{}
+			config.Tracer = counter
+			conn, err := pgx.ConnectConfig(t.Context(), config)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = conn.Close(context.Background()) })
 
-	result, err := exchange.Check(&output)
-	require.NoError(t, err)
-	require.Equal(t, torrents, result.Records)
-	require.LessOrEqual(t, counter.maxRows, int64(pageSize), "a query returned more than one page")
-	require.GreaterOrEqual(t, counter.queries, torrents/pageSize, "the export did not page")
+			var output bytes.Buffer
+			require.NoError(t, catalogue.ExportExchange(t.Context(), conn, &output, options))
+
+			result, err := exchange.Check(&output)
+			require.NoError(t, err)
+			require.Equal(t, torrents, result.Records)
+			require.LessOrEqual(t, counter.maxRows, int64(pageSize), "a query returned more than one page")
+			require.GreaterOrEqual(t, counter.queries, torrents/pageSize, "the export did not page")
+		})
+	}
 }
 
 // The classifier and enhancement both replace a torrent's row rather than add one, but
