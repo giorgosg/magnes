@@ -157,14 +157,17 @@ This SQL dump is separate from the exchange file that `POST /import` reads. A fu
 administrative `pg_dump` still includes private data and is a database backup, not a
 catalogue export or shareable ban list.
 
-`bitmagnet export [--include-tags] <file|->` writes the same visible torrents as an
-[exchange file](exchange-file.md) instead. Use the catalogue export to copy a catalogue
-into another database at the **same** version, such as a test instance. Use the exchange
-file to share an index with another instance or program, whatever its version. It carries
-torrents, files, sources and the current classification, but not the work's catalogue
-metadata, which a receiver re-fetches. Unlike `task export-data`, it reads the instance's
-own configuration rather than the `PG*` variables. It is read-only and applies no
-migrations, and it pages through one snapshot, so it is safe on a large catalogue.
+`bitmagnet export [--include-tags] [--since <time> [--overlap <duration>]] <file|->` writes
+the same visible torrents as an [exchange file](exchange-file.md) instead. Use the
+catalogue export to copy a catalogue into another database at the **same** version, such as
+a test instance. Use the exchange file to share an index with another instance or program,
+whatever its version. It carries torrents, files, sources and the current classification,
+but not the work's catalogue metadata, which a receiver re-fetches. Unlike
+`task export-data`, it reads the instance's own configuration rather than the `PG*`
+variables. It is read-only and applies no migrations, and it pages through one snapshot,
+so it is safe on a large catalogue. With `--since <time>` it writes only what changed
+since then, for keeping a receiver current; it never conveys deletions. See
+[Incremental export](exchange-file.md#incremental-export).
 
 Be careful with instances you do not own. bitmagnet is frequently self-hosted on slow
 hardware, where a single `count(*)` on `torrents` is genuinely disruptive.
