@@ -42,6 +42,8 @@ func (e *MalformedLineError) Unwrap() error { return e.Err }
 // Line is one decoded line: a header or a record, never both.
 type Line struct {
 	Number int
+	// Bytes is the length of the line as read, its newline included.
+	Bytes  int
 	Header *Header
 	Record *Record
 }
@@ -54,6 +56,9 @@ type Reader struct {
 	fatal     error
 	exhausted bool
 	report    report
+	limits    Limits
+	// listed counts the headers and malformed lines returned, which the caller keeps.
+	listed int
 }
 
 func NewReader(src io.Reader) *Reader {
@@ -72,7 +77,7 @@ func (r *Reader) Next() (Line, error) {
 			return Line{}, io.EOF
 		}
 
-		data, err := r.src.ReadBytes('\n')
+		data, err := r.readLine()
 		if errors.Is(err, io.EOF) {
 			r.exhausted = true
 		} else if err != nil {
@@ -95,13 +100,13 @@ func (r *Reader) Next() (Line, error) {
 }
 
 func (r *Reader) decodeLine(data []byte) (Line, error) {
-	line := Line{Number: r.line}
+	line := Line{Number: r.line, Bytes: len(data)}
 
 	n := &notes{scope: ScopeRecord}
 
 	fields, err := newObject(n, "", data)
 	if err != nil {
-		return line, &MalformedLineError{Line: r.line, Err: err}
+		return line, r.malformed(err)
 	}
 
 	if _, isHeader := fields.fields["format"]; isHeader {
@@ -113,8 +118,13 @@ func (r *Reader) decodeLine(data []byte) (Line, error) {
 			return line, r.fatal
 		}
 
+		if err := r.admit(n, 1); err != nil {
+			return line, err
+		}
+
+		clipHeader(&header, r.limits.MaxReportedBytes)
+
 		r.header = &header
-		r.report.merge(n)
 
 		line.Header = &header
 
@@ -128,10 +138,12 @@ func (r *Reader) decodeLine(data []byte) (Line, error) {
 
 	record, err := decodeRecord(fields)
 	if err != nil {
-		return line, &MalformedLineError{Line: r.line, Err: err}
+		return line, r.malformed(err)
 	}
 
-	r.report.merge(n)
+	if err := r.admit(n, 0); err != nil {
+		return line, err
+	}
 
 	line.Record = &record
 

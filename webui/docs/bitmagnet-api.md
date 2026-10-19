@@ -22,11 +22,11 @@ signatures are on disk — read those rather than inferring shapes from the Grap
 browser can query bitmagnet directly with nothing in the path — which is what makes the
 serverless UI possible.
 
-Allowed _headers_ are no longer reflected back from the request. Since PR #45 they are the
-four the server actually reads: `Content-Type`, `Authorization`, `X-Api-Key`,
-`X-Import-Id`. `Authorization` is among them, so bearer tokens work cross-origin; any
-other header Magnes invents fails preflight until an operator adds it to
-`http_server.cors.allowed_headers`.
+Allowed _headers_ are no longer reflected back from the request. Since PR #45 they are
+the ones the server actually reads: `Content-Type`, `Authorization` and `X-Api-Key`.
+`X-Import-Id` was among them until the legacy import format, its only reader, was removed.
+`Authorization` is among them, so bearer tokens work cross-origin; any other header Magnes
+invents fails preflight until an operator adds it to `http_server.cors.allowed_headers`.
 
 Serving Magnes from bitmagnet's own origin (`http_server.static`) removes CORS from the
 picture entirely. See `docs/serving-and-testing.md`.

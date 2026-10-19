@@ -86,7 +86,6 @@ func NewDefaultConfig() Config {
 				"Content-Type",
 				"Authorization", // http_auth.AuthorizationHeader
 				"X-Api-Key",     // torznab api key header
-				"X-Import-Id",   // importer/httpserver.ImportIDHeader
 			},
 		},
 		Static: StaticConfig{

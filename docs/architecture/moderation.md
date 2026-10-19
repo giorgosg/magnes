@@ -11,11 +11,12 @@ Bloom blocking is removed. The permissioned GraphQL moderation surface exposes p
 `moderate_keywords` replaces the default harmful-keyword `delete` branch. It uses the
 same keyword grammar and combined base name/base file paths as the previous CEL condition.
 `KeywordPolicy` compiles the merged classifier `keywords.banned` source and is supplied to
-both ingestion factories. Crawler metadata and importer names are checked before catalogue
-writes or classification queues; harmful crawler matches retain every observed path before
-`SaveFilesThreshold` caps ordinary file rows. Ordinary metadata acquires no private evidence.
-Known single-file metainfo retains its implicit filename; imports without metainfo keep
-missing paths nil. The classifier action reuses this policy for existing catalogue rows.
+both ingestion factories. Crawler metadata and imported names and file paths are checked
+before catalogue writes or classification queues; harmful crawler matches retain every
+observed path before `SaveFilesThreshold` caps ordinary file rows. Ordinary metadata
+acquires no private evidence. Known single-file metainfo retains its implicit filename;
+imported records without a file list keep missing paths nil. The classifier action reuses
+this policy for existing catalogue rows.
 Before evaluating it, the action checks for a local allow; allowed torrents continue normal
 classification, regardless of keyword changes. Category-deletion rules remain independent.
 

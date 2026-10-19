@@ -153,7 +153,7 @@ read-only repeatable-read snapshot without modifying the source database. `expor
 replaced only after a successful export; a failed export leaves the previous file intact.
 Restore it into a migrated database with `psql -v ON_ERROR_STOP=1 -d bitmagnet -f export.sql`.
 Explicit columns omit generated columns; `ON CONFLICT DO NOTHING` permits repeated restores.
-This SQL dump is separate from the newline-delimited JSON `/import` protocol. A full
+This SQL dump is separate from the exchange file that `POST /import` reads. A full
 administrative `pg_dump` still includes private data and is a database backup, not a
 catalogue export or shareable ban list.
 

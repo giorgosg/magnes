@@ -1,15 +1,14 @@
 package httpserver
 
 import (
-	"bufio"
-	"encoding/json"
+	"errors"
 	"fmt"
 	"mime"
 	"net/http"
-	"strconv"
-	"time"
+	"net/url"
 
 	"github.com/bitmagnet-io/bitmagnet/internal/auth/http_auth"
+	"github.com/bitmagnet-io/bitmagnet/internal/exchange"
 	"github.com/bitmagnet-io/bitmagnet/internal/httpserver"
 	"github.com/bitmagnet-io/bitmagnet/internal/importer"
 	"github.com/bitmagnet-io/bitmagnet/internal/lazy"
@@ -20,7 +19,7 @@ import (
 
 type Params struct {
 	fx.In
-	Importer lazy.Lazy[importer.Importer]
+	Importer lazy.Lazy[*importer.ExchangeImporter]
 	Guard    http_auth.Guard
 	Logger   *zap.SugaredLogger
 }
@@ -40,15 +39,30 @@ func New(p Params) Result {
 	}
 }
 
-const ImportIDHeader = "X-Import-Id"
+// The media types POST /import accepts. Both name the newline-delimited JSON an exchange
+// file is; application/json is kept because it is what clients of this endpoint have
+// always sent.
+const (
+	NDJSONMediaType = "application/x-ndjson"
+	JSONMediaType   = "application/json"
+)
 
-// ImportMediaType is the only media type POST /import accepts. The body is
-// newline-delimited JSON, which is what the importing guide has always told
-// clients to send, so requiring it breaks no documented usage.
-const ImportMediaType = "application/json"
+// Limits bound what one POST /import can make the server hold: its sender is not trusted
+// with the server's memory. The CLI import reads the operator's own files without them.
+var Limits = exchange.Limits{
+	MaxLineBytes:     1 << 20,
+	MaxReported:      1000,
+	MaxReportedBytes: 256,
+}
+
+// The query parameters POST /import reads.
+const (
+	originParam         = "origin"
+	overwriteHintsParam = "overwriteHints"
+)
 
 type builder struct {
-	importer lazy.Lazy[importer.Importer]
+	importer lazy.Lazy[*importer.ExchangeImporter]
 	guard    http_auth.Guard
 	logger   *zap.SugaredLogger
 }
@@ -72,121 +86,131 @@ func (b builder) Apply(e *gin.Engine) error {
 			return
 		}
 
-		// Reject anything but JSON before touching the body. text/plain,
-		// multipart/form-data and application/x-www-form-urlencoded are the three
-		// media types that make a cross-origin POST a CORS *simple request*: the
-		// browser sends it with no preflight, so no CORS response header is needed
-		// for this write to land. Refusing them forces a preflight, which the
-		// origin policy then gets to answer.
+		// Reject anything but the two NDJSON media types before touching the body.
+		// text/plain, multipart/form-data and application/x-www-form-urlencoded are the
+		// three media types that make a cross-origin POST a CORS *simple request*: the
+		// browser sends it with no preflight, so no CORS response header is needed for
+		// this write to land. Neither accepted type is one of them, so every request
+		// that gets past this check was preflighted, and the origin policy got to answer
+		// first. A missing Content-Type is refused for the same reason.
 		if !hasImportMediaType(ctx.Request) {
 			ctx.AbortWithStatus(http.StatusUnsupportedMediaType)
 
 			return
 		}
 
-		b.handle(ctx, i)
+		options, err := parseOptions(ctx.Request.URL.Query())
+		if err != nil {
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, errorResponse{Error: err.Error()})
+
+			return
+		}
+
+		b.handle(ctx, i, options)
 	})
 
 	return nil
 }
 
-// hasImportMediaType reports whether the request body is declared as JSON.
-// Parameters such as charset are allowed; a missing or unparseable header is
-// not, because a request that declares nothing is exactly the simple request
-// this is here to refuse. ParseMediaType lowercases what it returns, so the
-// comparison is already case-insensitive as RFC 9110 requires.
+// hasImportMediaType reports whether the request body is declared as NDJSON. Parameters
+// such as charset are allowed; a missing or unparseable header is not, because a request
+// that declares nothing is exactly the simple request this is here to refuse.
+// ParseMediaType lowercases what it returns, so the comparison is already
+// case-insensitive as RFC 9110 requires.
 func hasImportMediaType(req *http.Request) bool {
 	mediaType, _, err := mime.ParseMediaType(req.Header.Get("Content-Type"))
 	if err != nil {
 		return false
 	}
 
-	return mediaType == ImportMediaType
+	return mediaType == NDJSONMediaType || mediaType == JSONMediaType
 }
 
-func (b builder) handle(ctx *gin.Context, i importer.Importer) {
-	s := bufio.NewScanner(ctx.Request.Body)
-	s.Split(bufio.ScanRunes)
+// parseOptions reads the query: origin, required, and overwriteHints, true or false.
+// Anything else, or either one given twice, is refused rather than guessed at.
+func parseOptions(query url.Values) (importer.ExchangeOptions, error) {
+	var options importer.ExchangeOptions
 
-	importID := ctx.Request.Header.Get(ImportIDHeader)
-	if importID == "" {
-		importID = strconv.FormatUint(uint64(time.Now().Unix()), 10)
-	}
-
-	ai := i.New(ctx, importer.Info{
-		ID: importID,
-	})
-
-	var currentLine []rune
-
-	count := 0
-	writeCount := func() {
-		_, _ = fmt.Fprintf(ctx.Writer, "%d items imported\n", count)
-	}
-	addItem := func() error {
-		item := importer.Item{}
-		// todo: Fix this
-		//nolint:musttag
-		if err := json.Unmarshal([]byte(string(currentLine)), &item); err != nil {
-			b.logger.Errorw("error adding item", "error", err)
-			ctx.Status(400)
-			_, _ = ctx.Writer.WriteString(err.Error())
-
-			return err
-		}
-
-		if err := ai.Import(item); err != nil {
-			b.logger.Errorw("error importing item", "error", err)
-			ctx.Status(400)
-			_, _ = ctx.Writer.WriteString(err.Error())
-
-			return err
-		}
-
-		count++
-		if count%1_000 == 0 {
-			writeCount()
-
-			if count%10_000 == 0 {
-				ctx.Writer.Flush()
+	for name, values := range query {
+		switch name {
+		case originParam, overwriteHintsParam:
+			if len(values) != 1 {
+				return options, fmt.Errorf("%s is given %d times; give it once", name, len(values))
 			}
+		default:
+			return options, fmt.Errorf("unknown query parameter %q; expected %s and %s",
+				name, originParam, overwriteHintsParam)
 		}
-
-		return nil
 	}
 
-	for s.Scan() {
-		for _, ch := range s.Text() {
-			if ch == '\n' && len(currentLine) > 0 {
-				if err := addItem(); err != nil {
-					return
-				}
+	origin := query.Get(originParam)
+	if !exchange.ValidOriginLabel(origin) {
+		return options, fmt.Errorf("%s must be one lowercase kebab-case label, such as alice; got %q",
+			originParam, origin)
+	}
 
-				currentLine = nil
+	options.Origin = origin
+
+	if values, ok := query[overwriteHintsParam]; ok {
+		switch values[0] {
+		case "true":
+			options.OverwriteHints = true
+		case "false":
+		default:
+			return options, fmt.Errorf("%s must be true or false; got %q", overwriteHintsParam, values[0])
+		}
+	}
+
+	return options, nil
+}
+
+func (b builder) handle(ctx *gin.Context, i *importer.ExchangeImporter, options importer.ExchangeOptions) {
+	options.Limits = Limits
+
+	report, err := i.Import(ctx.Request.Context(), ctx.Request.Body, options)
+
+	response := newReportResponse(report)
+	status := http.StatusOK
+
+	if err != nil {
+		status = statusFor(err)
+		// Clipped like the report's own strings: a format error quotes what the sender
+		// wrote, which can be most of a line.
+		response.Error = Limits.Clip(err.Error())
+
+		if status >= http.StatusInternalServerError {
+			if ctx.Request.Context().Err() != nil {
+				// The client went away, and with it the batch in flight.
+				b.logger.Infow("import interrupted", "origin", options.Origin, "error", err)
 			} else {
-				currentLine = append(currentLine, ch)
+				b.logger.Errorw("import failed", "origin", options.Origin, "error", err)
 			}
+
+			// The cause is in the log. A database error is no business of the caller's.
+			response.Error = "import failed; the batches counted here were committed and the rest were not"
 		}
 	}
 
-	if len(currentLine) > 0 {
-		if err := addItem(); err != nil {
-			return
-		}
+	ctx.JSON(status, response)
+}
+
+// statusFor answers an import that stopped. The report it carries counts what was
+// committed before it stopped.
+func statusFor(err error) int {
+	var fatal *exchange.FatalError
+
+	switch {
+	case errors.Is(err, exchange.ErrLineTooLong), errors.Is(err, exchange.ErrTooMuchReported):
+		return http.StatusRequestEntityTooLarge
+	case errors.Is(err, exchange.ErrRecordBeforeHeader),
+		errors.Is(err, exchange.ErrUnsupportedFormat),
+		errors.Is(err, exchange.ErrUnsupportedVersion),
+		errors.Is(err, exchange.ErrInvalidHeader):
+		return http.StatusUnprocessableEntity
+	case errors.As(err, &fatal):
+		// Any other stream error is a failure to read the request body.
+		return http.StatusBadRequest
+	default:
+		return http.StatusInternalServerError
 	}
-
-	ai.Drain()
-
-	if err := ai.Close(); err != nil {
-		b.logger.Errorw("error closing import", "error", err)
-		ctx.Status(400)
-		_, _ = ctx.Writer.WriteString(err.Error())
-
-		return
-	}
-
-	ctx.Status(200)
-	writeCount()
-
-	_, _ = ctx.Writer.WriteString("import complete\n")
 }

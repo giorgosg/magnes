@@ -1,10 +1,9 @@
 package httpserver_test
 
 import (
-	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
 	"github.com/bitmagnet-io/bitmagnet/internal/auth/rbac"
@@ -18,48 +17,20 @@ import (
 )
 
 // allowGuard authorizes everything, so these tests exercise the handler rather
-// than the permission model. That is also the realistic case: the anonymous
-// baseline grants ObjectActionImport by default, so on a stock instance the
-// guard above lets the request through.
+// than the permission model, which has a test of its own against the real guard.
 type allowGuard struct{}
 
 func (allowGuard) Allow(*gin.Context, rbac.ObjectAction) bool { return true }
 
-// recordingImporter records whether the handler started an import at all. The
-// handler opens one before reading a byte of the body, so "no import started" is
-// the observable form of "the request was rejected before its body was read".
-type recordingImporter struct {
-	started bool
-	items   []importer.Item
-}
-
-func (i *recordingImporter) New(context.Context, importer.Info) importer.ActiveImport {
-	i.started = true
-
-	return i
-}
-
-func (i *recordingImporter) Import(items ...importer.Item) error {
-	i.items = append(i.items, items...)
-
-	return nil
-}
-
-func (*recordingImporter) Drain() {}
-
-func (*recordingImporter) Closed() bool { return false }
-
-func (*recordingImporter) Close() error { return nil }
-
-func (*recordingImporter) Err() error { return nil }
-
-func newTestEngine(t *testing.T) (*gin.Engine, *recordingImporter) {
+// newEngine serves POST /import with an importer that has no database. It suits only
+// requests refused before the import starts: one that got further would fail on the
+// missing database.
+func newEngine(t *testing.T) *gin.Engine {
 	t.Helper()
 
-	imp := &recordingImporter{}
 	result := httpserver.New(httpserver.Params{
-		Importer: lazy.New[importer.Importer](func() (importer.Importer, error) {
-			return imp, nil
+		Importer: lazy.New(func() (*importer.ExchangeImporter, error) {
+			return importer.NewExchangeImporter(nil, nil, importer.ExchangeConfig{}), nil
 		}),
 		Guard:  allowGuard{},
 		Logger: zap.NewNop().Sugar(),
@@ -68,77 +39,53 @@ func newTestEngine(t *testing.T) (*gin.Engine, *recordingImporter) {
 	engine := gin.New()
 	require.NoError(t, result.Option.Apply(engine))
 
-	return engine, imp
+	return engine
 }
 
-const testImportBody = `{"source":"test","infoHash":"0000000000000000000000000000000000000000","name":"x","size":1}`
+// unreadBody fails the test if the handler reads a byte of it.
+type unreadBody struct{ t *testing.T }
+
+func (b unreadBody) Read([]byte) (int, error) {
+	b.t.Error("the body was read before the request was validated")
+
+	return 0, io.EOF
+}
 
 // The import endpoint writes the database. Without a Content-Type check a
 // cross-origin POST of text/plain is a CORS *simple request*: the browser sends
 // it with no preflight, so no CORS response header is needed for the write to
-// land. Rejecting anything but JSON is what makes the request non-simple, and so
+// land. Rejecting anything but NDJSON is what makes the request non-simple, and so
 // preflighted, regardless of what the anonymous baseline grants.
-func TestImportRejectsNonJSONContentType(t *testing.T) {
+func TestImportRejectsMediaTypesOtherThanNDJSON(t *testing.T) {
 	t.Parallel()
 
 	for _, contentType := range []string{
 		"text/plain",
 		"text/plain;charset=UTF-8",
+		"text/plain; x=application/json",
 		"application/x-www-form-urlencoded",
 		"multipart/form-data; boundary=x",
+		"application/jsonl",
+		"application/json, text/plain",
 		"",
 	} {
 		t.Run("content-type "+contentType, func(t *testing.T) {
 			t.Parallel()
 
-			engine, imp := newTestEngine(t)
-
 			req := httptest.NewRequestWithContext(
 				t.Context(),
 				http.MethodPost,
-				"/import",
-				strings.NewReader(testImportBody),
+				"/import?origin=alice",
+				unreadBody{t},
 			)
 			if contentType != "" {
 				req.Header.Set("Content-Type", contentType)
 			}
 
 			rec := httptest.NewRecorder()
-			engine.ServeHTTP(rec, req)
+			newEngine(t).ServeHTTP(rec, req)
 
 			assert.Equal(t, http.StatusUnsupportedMediaType, rec.Code)
-			assert.False(t, imp.started, "the body must not be read before the media type is checked")
-			assert.Empty(t, imp.items)
-		})
-	}
-}
-
-func TestImportAcceptsJSONContentType(t *testing.T) {
-	t.Parallel()
-
-	for _, contentType := range []string{
-		"application/json",
-		"application/json; charset=utf-8",
-		"application/JSON",
-	} {
-		t.Run("content-type "+contentType, func(t *testing.T) {
-			t.Parallel()
-
-			engine, imp := newTestEngine(t)
-
-			req := httptest.NewRequestWithContext(
-				t.Context(),
-				http.MethodPost,
-				"/import",
-				strings.NewReader(testImportBody),
-			)
-			req.Header.Set("Content-Type", contentType)
-
-			rec := httptest.NewRecorder()
-			engine.ServeHTTP(rec, req)
-
-			assert.Equal(t, http.StatusOK, rec.Code)
-			assert.Len(t, imp.items, 1)
 		})
 	}
 }

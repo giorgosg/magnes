@@ -66,7 +66,7 @@ type sourcePlan struct {
 }
 
 // plan translates one record, or reports why it cannot be stored.
-func (i *ExchangeImporter) plan(record exchange.Record, options ExchangeOptions, d drops) (recordPlan, bool) {
+func (i *ExchangeImporter) plan(record exchange.Record, options ExchangeOptions, d *drops) (recordPlan, bool) {
 	p := recordPlan{hash: record.InfoHash, name: record.Name, private: record.Private.Val}
 
 	if record.Size.Valid {
@@ -111,10 +111,15 @@ func (i *ExchangeImporter) plan(record exchange.Record, options ExchangeOptions,
 		p.hint = planHint(record.Magnes.Classification.Val, d)
 	}
 
+	// A set, not a scan of p.tags: one line can carry tens of thousands of tags, and a
+	// scan per tag made planning such a record quadratic.
+	seen := make(map[string]struct{}, len(record.Magnes.Tags.Val))
+
 	for _, tag := range record.Magnes.Tags.Val {
 		if model.ValidateTagName(tag) != nil {
 			d.add(ReasonInvalidTag, "magnes.tags[]", tag)
-		} else if !slices.Contains(p.tags, tag) {
+		} else if _, repeated := seen[tag]; !repeated {
+			seen[tag] = struct{}{}
 			p.tags = append(p.tags, tag)
 		}
 	}
@@ -127,7 +132,7 @@ func (i *ExchangeImporter) plan(record exchange.Record, options ExchangeOptions,
 // and the release attributes directly. A classification with no content type becomes no
 // hint, because the column is required. A work from a provider this instance does not know
 // is left out, since the hint could not reference it.
-func planHint(c exchange.Classification, d drops) *hintPlan {
+func planHint(c exchange.Classification, d *drops) *hintPlan {
 	if !c.ContentType.Valid {
 		d.add(ReasonNoContentType, "magnes.classification", "")
 		return nil
@@ -299,7 +304,7 @@ const maxBatchAttempts = 3
 // own order, and one lost batch must not end a long import. A retry is safe: an aborted
 // batch wrote nothing, and the merge rules make writing it again idempotent.
 func (i *ExchangeImporter) writeBatch(
-	ctx context.Context, records []exchange.Record, options ExchangeOptions, d drops,
+	ctx context.Context, records []exchange.Record, options ExchangeOptions, d *drops,
 ) (batchResult, error) {
 	var planned batchResult
 
@@ -315,6 +320,12 @@ func (i *ExchangeImporter) writeBatch(
 
 		plans = append(plans, p)
 		evidence = append(evidence, p.evidence)
+	}
+
+	// Planning is where the import's own drops are counted, so a batch that took them past
+	// the limit stops here, before it is written.
+	if err := d.check(); err != nil {
+		return batchResult{}, err
 	}
 
 	if len(plans) == 0 {

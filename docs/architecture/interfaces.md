@@ -85,29 +85,29 @@ is in the file's comments and is worth reading before touching it.
 
 ## Import
 
-`POST /import` streams newline-delimited JSON into `internal/importer`. It writes
-torrents, so it is guarded by `http_auth.Guard` against an `import` object action. `X-Import-Id`
-names the import batch, which lands in `torrents_torrent_sources.import_id`.
+`POST /import?origin=<label>[&overwriteHints=true]` streams an
+[exchange file](../exchange-file.md#http-import) into `importer.ExchangeImporter`, the
+import the CLI `import` runs, and answers with its report as JSON. It writes torrents, so
+it is guarded by `http_auth.Guard` against an `import` object action. The handler is
+[`importer/httpserver`](../../internal/importer/httpserver/httpserver.go); the merge rules
+and how a batch meets the crawler are in [ingest.md](ingest.md#exchange-file-imports).
 
-Re-importing a torrent that already has a row for the item's `source` updates that row
-without overwriting a known value with an unknown one: `import_id`, `seeders`, `leechers`
-and `published_at` each keep their stored value when the item leaves them out. An item
-carries no peer counts at all, so updating every column used to reset a `dht` row's
-seeders to NULL — and, through the `enhancement_source_rank` trigger, the torrent's
-enhancement rank with it. Hints are a separate upsert and still overwrite in full.
+Every check that refuses a request runs before the body is read: the guard, then the media
+type, then the query. The body is then read within `exchange.Limits` — 1 MiB lines, 1000
+report entries, 256-byte report strings — so a sender cannot make the server hold an
+unbounded line or report. A limit answers 413 with the report of what was committed.
 
-It also requires `Content-Type: application/json`, answering anything else with 415 before
-reading a byte of the body. That is a CORS property rather than a parsing one: `text/plain`,
+It accepts `Content-Type: application/x-ndjson` or `application/json`, answering anything
+else with 415. That is a CORS property rather than a parsing one: `text/plain`,
 `multipart/form-data` and `application/x-www-form-urlencoded` are the media types that make
 a cross-origin POST a _simple request_, sent with no preflight, so a page the operator
 visits could write to this endpoint without the browser ever consulting `allowed_origins`.
 Refusing them forces the preflight that the origin policy gets to answer.
 
-The import owns a context derived from the request's, and cancelling it - a client
-disconnecting mid-stream, or a shutdown - ends the buffering loop and makes any waiting
-`Import` return `ErrImportClosed`. That has to hold: `http.Server.Shutdown` waits for
-in-flight requests, so an import that cannot be interrupted hangs the process rather than
-just itself.
+The import runs under the request's context, so a client disconnecting mid-stream rolls
+back the batch in flight and keeps the batches already committed. That has to hold:
+`http.Server.Shutdown` waits for in-flight requests, so an import that cannot be
+interrupted hangs the process rather than just itself.
 
 ## Telemetry and health
 
@@ -154,8 +154,8 @@ Cross-origin browser deployments must explicitly list their UI origins; `['*']` 
 back into public cross-origin reads. The wrapper overrides the CORS library's empty-list
 allow-all behavior with a deny callback.
 
-The default allowed headers are `Content-Type`, `Authorization`, `X-Api-Key` and
-`X-Import-Id`; debug logging is off. See [docs/auth.md](../auth.md) for deployment guidance.
+The default allowed headers are `Content-Type`, `Authorization` and `X-Api-Key`; debug
+logging is off. See [docs/auth.md](../auth.md) for deployment guidance.
 
 The moderation HTTP option also mounts `POST /graphql/moderation/import`, guarded by the
 separate `http:moderation:import` action. It accepts one bounded raw JSON file, validates it

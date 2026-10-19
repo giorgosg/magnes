@@ -21,6 +21,11 @@ var ErrInvalidOrigin = errors.New("invalid origin label")
 // those locks, so a batch is kept small.
 const DefaultExchangeBatchSize = 100
 
+// DefaultExchangeBatchBytes also cuts a batch, once its lines total this many bytes. A
+// decoded record can take ten times its line in memory, so a count alone let a batch of
+// large lines hold the best part of a gigabyte.
+const DefaultExchangeBatchBytes = 4 << 20
+
 // ExchangeConfig is how this instance stores what it imports.
 type ExchangeConfig struct {
 	// FilesThreshold is the crawler's SaveFilesThreshold: no more file rows than this are
@@ -29,6 +34,9 @@ type ExchangeConfig struct {
 	// BatchSize is how many records one transaction writes. Zero means
 	// DefaultExchangeBatchSize.
 	BatchSize int
+	// BatchBytes cuts a batch once its lines total this many bytes. Zero means
+	// DefaultExchangeBatchBytes.
+	BatchBytes int
 }
 
 // ExchangeOptions are the choices one import makes.
@@ -39,11 +47,13 @@ type ExchangeOptions struct {
 	// OverwriteHints replaces an existing hint with the incoming classification. Without
 	// it, an existing hint wins.
 	OverwriteHints bool
+	// Limits bound what the import holds in memory. Zero is no limit.
+	Limits exchange.Limits
 }
 
 // ExchangeImporter reads exchange files into the catalogue under the merge rules in
-// docs/exchange-file.md. It is the one import code path: the CLI calls it, and the HTTP
-// endpoint is to call it once it reads exchange files.
+// docs/exchange-file.md. It is the one import code path: the CLI import command and
+// POST /import both call it.
 type ExchangeImporter struct {
 	db            *gorm.DB
 	keywordPolicy *moderation.KeywordPolicy
@@ -55,6 +65,10 @@ func NewExchangeImporter(
 ) *ExchangeImporter {
 	if config.BatchSize <= 0 {
 		config.BatchSize = DefaultExchangeBatchSize
+	}
+
+	if config.BatchBytes <= 0 {
+		config.BatchBytes = DefaultExchangeBatchBytes
 	}
 
 	return &ExchangeImporter{db: db, keywordPolicy: keywordPolicy, config: config}
@@ -137,16 +151,19 @@ func (i *ExchangeImporter) Import(
 
 	defer close(done)
 
-	go readBatches(exchange.NewReader(src), i.config.BatchSize, batches, done)
+	go readBatches(exchange.NewLimitedReader(src, options.Limits), i.config.BatchSize, i.config.BatchBytes, batches,
+		done)
 
 	var (
 		report  ExchangeReport
 		dropped []exchange.ReportEntry
-		ownDrop = make(drops)
+		ownDrop = newDrops(options.Limits)
 	)
 
 	finish := func(err error) (ExchangeReport, error) {
 		report.Dropped = mergeDrops(dropped, ownDrop)
+		report.trim(options.Limits.MaxReported)
+
 		return report, err
 	}
 
@@ -168,6 +185,13 @@ func (i *ExchangeImporter) Import(
 		report.Records += len(batch.records)
 		dropped = batch.dropped
 
+		// The reader keeps its own entries within the limit, but not alongside the
+		// import's, which this counts them against.
+		ownDrop.reported = len(report.Headers) + len(report.Malformed) + len(dropped)
+		if err := ownDrop.check(); err != nil {
+			return finish(err)
+		}
+
 		if len(batch.records) > 0 {
 			written, err := i.writeBatch(ctx, batch.records, options, ownDrop)
 			if err != nil {
@@ -187,11 +211,15 @@ func (i *ExchangeImporter) Import(
 	}
 }
 
-// readBatches cuts the stream into batches. A batch never holds one infohash twice, so a
-// repeated record is written after the earlier one, as if the file were read one record
-// at a time. It stops at the end of the stream, on a fatal error, or when done closes.
-func readBatches(reader *exchange.Reader, size int, out chan<- readBatch, done <-chan struct{}) {
-	var batch readBatch
+// readBatches cuts the stream into batches of at most size records, cut sooner once their
+// lines total maxBytes. A batch never holds one infohash twice, so a repeated record is
+// written after the earlier one, as if the file were read one record at a time. It stops
+// at the end of the stream, on a fatal error, or when done closes.
+func readBatches(reader *exchange.Reader, size, maxBytes int, out chan<- readBatch, done <-chan struct{}) {
+	var (
+		batch      readBatch
+		batchBytes int
+	)
 
 	seen := make(map[protocol.ID]struct{}, size)
 
@@ -200,7 +228,7 @@ func readBatches(reader *exchange.Reader, size int, out chan<- readBatch, done <
 
 		select {
 		case out <- batch:
-			batch = readBatch{}
+			batch, batchBytes = readBatch{}, 0
 
 			clear(seen)
 
@@ -242,9 +270,10 @@ func readBatches(reader *exchange.Reader, size int, out chan<- readBatch, done <
 		}
 
 		batch.records = append(batch.records, *line.Record)
+		batchBytes += line.Bytes
 		seen[line.Record.InfoHash] = struct{}{}
 
-		if len(batch.records) >= size && !send(false, nil) {
+		if (len(batch.records) >= size || batchBytes >= maxBytes) && !send(false, nil) {
 			return
 		}
 	}
@@ -274,16 +303,71 @@ type dropKey struct {
 	value  string
 }
 
-type drops map[dropKey]int
+// drops is the import's own drop report, kept within the import's limits.
+type drops struct {
+	counts map[dropKey]int
+	limits exchange.Limits
+	// reported is how many entries the rest of the report holds. The import's own drops
+	// get what is left of the limit.
+	reported int
+	// full is set once a drop found no room, which stops the import.
+	full bool
+}
 
-func (d drops) add(reason exchange.Reason, path, value string) {
-	d[dropKey{reason: reason, path: path, value: value}]++
+func newDrops(limits exchange.Limits) *drops {
+	return &drops{counts: make(map[dropKey]int), limits: limits}
+}
+
+// add counts a drop. A new entry with no room left under the limit is not kept, so a
+// record cannot make the import hold more than the limit while its batch is planned.
+func (d *drops) add(reason exchange.Reason, path, value string) {
+	key := dropKey{reason: reason, path: path, value: d.limits.Clip(value)}
+	if _, seen := d.counts[key]; !seen && d.over(1) {
+		d.full = true
+		return
+	}
+
+	d.counts[key]++
+}
+
+func (d *drops) over(extra int) bool {
+	return d.limits.MaxReported > 0 && d.reported+len(d.counts)+extra > d.limits.MaxReported
+}
+
+// check stops an import whose report would hold more than the limit allows.
+func (d *drops) check() error {
+	if d.full || d.over(0) {
+		return d.limits.TooMuchReported()
+	}
+
+	return nil
+}
+
+// trim keeps a report that stopped at the limit within it. The reader and the import each
+// keep within the limit, so together they can pass it by up to one batch before the
+// import stops; the entries past it are cut from the end of each list, dropped entries
+// first, then malformed lines, then headers.
+func (r *ExchangeReport) trim(limit int) {
+	over := len(r.Headers) + len(r.Malformed) + len(r.Dropped) - limit
+	if limit <= 0 || over <= 0 {
+		return
+	}
+
+	cut := min(over, len(r.Dropped))
+	r.Dropped = r.Dropped[:len(r.Dropped)-cut]
+	over -= cut
+
+	cut = min(over, len(r.Malformed))
+	r.Malformed = r.Malformed[:len(r.Malformed)-cut]
+	over -= cut
+
+	r.Headers = r.Headers[:len(r.Headers)-over]
 }
 
 // mergeDrops appends the import's own drops to the reader's, in the same stable order.
-func mergeDrops(read []exchange.ReportEntry, own drops) []exchange.ReportEntry {
+func mergeDrops(read []exchange.ReportEntry, own *drops) []exchange.ReportEntry {
 	entries := append([]exchange.ReportEntry(nil), read...)
-	for key, n := range own {
+	for key, n := range own.counts {
 		entries = append(entries, exchange.ReportEntry{
 			Scope:  exchange.ScopeRecord,
 			Reason: key.reason,

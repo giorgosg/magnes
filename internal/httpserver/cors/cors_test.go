@@ -59,7 +59,7 @@ func TestDefaultConfig_DoesNotAllowArbitraryHeaders(t *testing.T) {
 func TestDefaultConfig_AllowsTheHeadersTheServerReads(t *testing.T) {
 	t.Parallel()
 
-	for _, header := range []string{"Content-Type", "Authorization", "X-Api-Key", "X-Import-Id"} {
+	for _, header := range []string{"Content-Type", "Authorization", "X-Api-Key"} {
 		t.Run(header, func(t *testing.T) {
 			t.Parallel()
 
@@ -67,6 +67,15 @@ func TestDefaultConfig_AllowsTheHeadersTheServerReads(t *testing.T) {
 				"%s is read by the server and must survive a preflight", header)
 		})
 	}
+}
+
+// X-Import-Id named a legacy import batch. The exchange import reads no such header, so
+// the default no longer lets a cross-origin caller send it.
+func TestDefaultConfig_DoesNotAllowTheRetiredImportIDHeader(t *testing.T) {
+	t.Parallel()
+
+	assert.Empty(t, preflightAllows(t, "X-Import-Id"),
+		"no handler reads X-Import-Id since POST /import reads exchange files")
 }
 
 func TestDefaultConfig_CorsDebugIsOff(t *testing.T) {
