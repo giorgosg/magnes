@@ -441,8 +441,9 @@ ON CONFLICT DO NOTHING`)
 SELECT 'dht', info_hash, 1, now(), now() FROM torrents`)
 
 	for name, options := range map[string]catalogue.ExchangeOptions{
-		"full":        {PageSize: pageSize},
-		"incremental": {PageSize: pageSize, Since: model.MaybeValid(since)},
+		"full": {PageSize: pageSize},
+		// Every row is stamped now(), so an hour ago covers them all.
+		"incremental": {PageSize: pageSize, Since: model.MaybeValid(time.Now().Add(-time.Hour))},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -487,4 +488,65 @@ VALUES ($1,'movie',now(),now() - interval '1 day'), ($1,'music',now(),now()),
 	require.Len(t, out.order, 1)
 	require.Equal(t, model.MaybeValid(model.ContentTypeMusic),
 		out.records[hash].Magnes.Classification.Val.ContentType)
+}
+
+// A table rewrite is not MVCC-safe: a snapshot taken before it commits sees the rewritten
+// table as empty. An export whose snapshot predates a migration it then waits on would
+// exit 0 having silently written nothing, and in a chain of incremental exports that
+// window would never be sent. The export must wait for the rewrite before its snapshot.
+func TestExchangeExportWaitsForATableRewriteBeforeItsSnapshot(t *testing.T) {
+	t.Parallel()
+
+	for name, options := range map[string]catalogue.ExchangeOptions{
+		"full":        {},
+		"incremental": {Since: model.MaybeValid(time.Now().Add(-time.Hour))},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			db := dbtest.New(t)
+			hash := protocol.ID{1}
+			insertTorrent(t, db, hash, "Rewritten", 10, "no_info")
+
+			migration, err := db.Pool.Begin(t.Context())
+			require.NoError(t, err)
+
+			defer func() { _ = migration.Rollback(context.Background()) }()
+
+			// A volatile default forces PostgreSQL to rewrite the table.
+			_, err = migration.Exec(t.Context(),
+				`ALTER TABLE torrents ADD COLUMN rewrite_probe double precision DEFAULT random()`)
+			require.NoError(t, err)
+
+			config, err := pgx.ParseConfig(db.DSN)
+			require.NoError(t, err)
+			conn, err := pgx.ConnectConfig(t.Context(), config)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = conn.Close(context.Background()) })
+
+			exportPID := conn.PgConn().PID()
+
+			var output bytes.Buffer
+
+			done := make(chan error, 1)
+
+			go func() { done <- catalogue.ExportExchange(t.Context(), conn, &output, options) }()
+
+			// Commit the rewrite only once the export is blocked on it.
+			require.Eventually(t, func() bool {
+				var waiting bool
+
+				_ = db.Pool.QueryRow(t.Context(), `SELECT EXISTS (SELECT 1 FROM pg_stat_activity
+ WHERE pid = $1 AND wait_event_type = 'Lock')`, exportPID).Scan(&waiting)
+
+				return waiting
+			}, 10*time.Second, 10*time.Millisecond, "the export never waited on the rewrite")
+			require.NoError(t, migration.Commit(t.Context()))
+			require.NoError(t, <-done)
+
+			result, err := exchange.Check(&output)
+			require.NoError(t, err)
+			require.Equal(t, 1, result.Records, "the export read the rewritten table as empty")
+		})
+	}
 }

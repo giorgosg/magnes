@@ -72,7 +72,8 @@ func ExportExchange(ctx context.Context, db Beginner, output io.Writer, options 
 	// taken before it commits reads the rewritten table as empty, and the export would
 	// succeed having written nothing. Locking every table a record is built from before
 	// the snapshot exists waits for any rewrite in flight, and blocks new ones until the
-	// export ends. LOCK TABLE does not take the snapshot.
+	// export ends. LOCK TABLE does not take the snapshot. Every table the readers below
+	// and declareChanged read must be in this list.
 	if _, err = tx.Exec(ctx, `LOCK TABLE torrents, torrent_files, torrents_torrent_sources, torrent_contents,
  torrent_tags, moderation_decisions IN ACCESS SHARE MODE`); err != nil {
 		return fmt.Errorf("start exchange export: %w", err)

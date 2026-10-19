@@ -1,18 +1,14 @@
 package catalogue_test
 
 import (
-	"bytes"
-	"context"
 	"testing"
 	"time"
 
 	"github.com/bitmagnet-io/bitmagnet/internal/database/catalogue"
 	"github.com/bitmagnet-io/bitmagnet/internal/database/dbtest"
-	"github.com/bitmagnet-io/bitmagnet/internal/exchange"
 	"github.com/bitmagnet-io/bitmagnet/internal/model"
 	"github.com/bitmagnet-io/bitmagnet/internal/moderation"
 	"github.com/bitmagnet-io/bitmagnet/internal/protocol"
-	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/require"
 )
 
@@ -192,67 +188,6 @@ SELECT info_hash, 'movie', $1, $1 FROM torrents WHERE get_byte(info_hash, 19) % 
 
 	out := exportExchange(t, db, catalogue.ExchangeOptions{Since: model.MaybeValid(since), PageSize: 10})
 	require.Equal(t, want, out.order)
-}
-
-// A table rewrite is not MVCC-safe: a snapshot taken before it commits sees the rewritten
-// table as empty. An export whose snapshot predates a migration it then waits on would
-// exit 0 having silently written nothing, and in a chain of incremental exports that
-// window would never be sent. The export must wait for the rewrite before its snapshot.
-func TestExchangeExportWaitsForATableRewriteBeforeItsSnapshot(t *testing.T) {
-	t.Parallel()
-
-	for name, options := range map[string]catalogue.ExchangeOptions{
-		"full":        {},
-		"incremental": {Since: model.MaybeValid(since)},
-	} {
-		t.Run(name, func(t *testing.T) {
-			t.Parallel()
-
-			db := dbtest.New(t)
-			hash := protocol.ID{1}
-			seedSettled(t, db, hash, "Rewritten", since)
-
-			migration, err := db.Pool.Begin(t.Context())
-			require.NoError(t, err)
-
-			defer func() { _ = migration.Rollback(context.Background()) }()
-
-			// A volatile default forces PostgreSQL to rewrite the table.
-			_, err = migration.Exec(t.Context(),
-				`ALTER TABLE torrents ADD COLUMN rewrite_probe double precision DEFAULT random()`)
-			require.NoError(t, err)
-
-			config, err := pgx.ParseConfig(db.DSN)
-			require.NoError(t, err)
-			conn, err := pgx.ConnectConfig(t.Context(), config)
-			require.NoError(t, err)
-			t.Cleanup(func() { _ = conn.Close(context.Background()) })
-
-			exportPID := conn.PgConn().PID()
-
-			var output bytes.Buffer
-
-			done := make(chan error, 1)
-
-			go func() { done <- catalogue.ExportExchange(t.Context(), conn, &output, options) }()
-
-			// Commit the rewrite only once the export is blocked on it.
-			require.Eventually(t, func() bool {
-				var waiting bool
-
-				_ = db.Pool.QueryRow(t.Context(), `SELECT EXISTS (SELECT 1 FROM pg_stat_activity
- WHERE pid = $1 AND wait_event_type = 'Lock')`, exportPID).Scan(&waiting)
-
-				return waiting
-			}, 10*time.Second, 10*time.Millisecond, "the export never waited on the rewrite")
-			require.NoError(t, migration.Commit(t.Context()))
-			require.NoError(t, <-done)
-
-			result, err := exchange.Check(&output)
-			require.NoError(t, err)
-			require.Equal(t, 1, result.Records, "the export read the rewritten table as empty")
-		})
-	}
 }
 
 // Tags are insert-only, so a new tag carries its own time. It is a change to the file only
