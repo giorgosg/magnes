@@ -157,8 +157,8 @@ This SQL dump is separate from the exchange file that `POST /import` reads. A fu
 administrative `pg_dump` still includes private data and is a database backup, not a
 catalogue export or shareable ban list.
 
-`bitmagnet export [--include-tags] [--since <time>] <file|->` writes the same visible
-torrents as an [exchange file](exchange-file.md) instead. Use the catalogue export to copy a catalogue
+`bitmagnet export [--include-tags] [--since <time> [--overlap <duration>]] <file|->` writes
+the same visible torrents as an [exchange file](exchange-file.md) instead. Use the catalogue export to copy a catalogue
 into another database at the **same** version, such as a test instance. Use the exchange
 file to share an index with another instance or program, whatever its version. It carries
 torrents, files, sources and the current classification, but not the work's catalogue
