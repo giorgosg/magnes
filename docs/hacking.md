@@ -158,9 +158,10 @@ administrative `pg_dump` still includes private data and is a database backup, n
 catalogue export or shareable ban list.
 
 `bitmagnet export [--include-tags] [--since <time> [--overlap <duration>]] <file|->` writes
-the same visible torrents as an [exchange file](exchange-file.md) instead. Use the catalogue export to copy a catalogue
-into another database at the **same** version, such as a test instance. Use the exchange
-file to share an index with another instance or program, whatever its version. It carries
+the same visible torrents as an [exchange file](exchange-file.md) instead. Use the catalogue
+export to copy a catalogue into another database at the **same** version, such as a test
+instance. Use the exchange file to share an index with another instance or program,
+whatever its version. It carries
 torrents, files, sources and the current classification, but not the work's catalogue
 metadata, which a receiver re-fetches. Unlike `task export-data`, it reads the instance's
 own configuration rather than the `PG*` variables. It is read-only and applies no
