@@ -86,7 +86,8 @@ type ExchangeReport struct {
 	// Banned counts records refused by moderation.
 	Banned int
 	// Skipped counts records that could not be written for another reason: a value too
-	// large for its column, or a torrent deleted between the batch's insert and its lock.
+	// large for its column or its index, or a torrent deleted between the batch's insert
+	// and its lock.
 	Skipped int
 	// HintsWritten counts hints created or replaced. HintsKept counts incoming
 	// classifications that lost to an existing hint.
@@ -112,7 +113,8 @@ const (
 	// ReasonUnknownWorkSource is a work identity from a provider this instance does not
 	// know. The hint is written without the identity.
 	ReasonUnknownWorkSource exchange.Reason = "unknown-work-source"
-	// ReasonOutOfRange is a value too large for its column. The record is skipped.
+	// ReasonOutOfRange is a value too large for its column, or a string too long for the
+	// index over it. The record is skipped.
 	ReasonOutOfRange exchange.Reason = "out-of-range"
 )
 
