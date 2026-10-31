@@ -61,7 +61,7 @@ skipped or could not run, and why.
 | [docs/auth.md](docs/auth.md)                                                               | Configuring or deploying authentication, or running behind a reverse proxy                     |
 | [docs/moderation.md](docs/moderation.md)                                                   | Moderator permissions, private evidence and decisions                                          |
 | [docs/moderation-ban-file.md](docs/moderation-ban-file.md)                                 | The frozen ban-file format, its provenance and membership privacy limit                        |
-| [docs/exchange-file.md](docs/exchange-file.md)                                             | Exchange file v1: shareable torrent records, version rules, `check` and `export`               |
+| [docs/exchange-file.md](docs/exchange-file.md)                                             | Exchange file v1: shareable torrent records, `check`, `export` (full and `--since`), `import`  |
 | [docs/enhancement.md](docs/enhancement.md)                                                 | LLM metadata enhancement and `bitmagnet enhancement evaluate`                                  |
 | [docs/adr/](docs/adr/)                                                                     | Reversing a past decision, or making one whose reason the code will not show                   |
 | [CONTEXT.md](CONTEXT.md), [GLOSSARY.md](GLOSSARY.md), [webui/CONTEXT.md](webui/CONTEXT.md) | Naming a domain concept: principals and permissions, catalogue terms, UI identity language     |
