@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"sync"
 	"time"
 
@@ -17,9 +18,9 @@ import (
 // requesterLazy defers instantiation of the requester (and possible failure) until the first request is made,
 // avoiding failure when the TMDB client is not needed.
 //
-// Only a permanent failure (TMDB disabled, or the default API key rejected) is kept for the life of the process.
-// Any other failure (DNS, dial, timeout, 5xx) is reported until initRetryInterval has passed, and the next request
-// after that tries again, so a network outage at startup does not disable TMDB until restart.
+// Only a permanent failure (TMDB disabled, or the default API key rejected with 401) is kept for the life of the
+// process. Any other failure (DNS, dial, timeout, 5xx) is reported until initRetryInterval has passed, and the next
+// request after that tries again, so a network outage at startup does not disable TMDB until restart.
 type requesterLazy struct {
 	config Config
 	logger *zap.SugaredLogger
@@ -28,20 +29,25 @@ type requesterLazy struct {
 	// now is the clock for the retry window; nil means time.Now.
 	now func() time.Time
 
-	mu         sync.Mutex
-	requester  Requester
-	err        error         // permanent failure
-	lastErr    error         // transient failure, returned until retryAfter
-	retryAfter time.Time     // zero until a transient failure
-	inflight   chan struct{} // closed when the running initialisation finishes
+	mu           sync.Mutex
+	requester    Requester
+	permanentErr error
+	transientErr error         // returned until retryAfter
+	retryAfter   time.Time     // when the next initialization may start after transientErr
+	inflight     chan struct{} // closed when the running initialization finishes
 }
 
 const (
-	// initRetryInterval is the minimum time between initialisation attempts after a transient failure.
+	// initRetryInterval is the minimum time between initialization attempts after a transient failure.
 	initRetryInterval = 30 * time.Second
-	// initTimeout bounds one initialisation, including resty's own retries and the default-key fallback.
+	// initTimeout bounds one initialization, including resty's own retries and the default-key fallback.
 	initTimeout = 2 * time.Minute
 )
+
+// permanentError marks an initialization failure that retrying cannot fix.
+type permanentError struct{ error }
+
+func (e permanentError) Unwrap() error { return e.error }
 
 func (r *requesterLazy) Request(
 	ctx context.Context,
@@ -58,6 +64,8 @@ func (r *requesterLazy) Request(
 }
 
 func (r *requesterLazy) get(ctx context.Context) (Requester, error) {
+	started := false
+
 	for {
 		r.mu.Lock()
 
@@ -67,12 +75,13 @@ func (r *requesterLazy) get(ctx context.Context) (Requester, error) {
 			r.mu.Unlock()
 
 			return requester, nil
-		case r.err != nil:
-			err := r.err
+		case r.permanentErr != nil:
+			err := r.permanentErr
 			r.mu.Unlock()
 
 			return nil, err
-		case r.inflight != nil:
+		case r.inflight != nil && (started || r.transientErr == nil):
+			// The caller that started this attempt waits for its result, as does everyone on the first one.
 			inflight := r.inflight
 			r.mu.Unlock()
 
@@ -82,24 +91,26 @@ func (r *requesterLazy) get(ctx context.Context) (Requester, error) {
 			case <-ctx.Done():
 				return nil, ctx.Err()
 			}
-		case r.lastErr != nil && r.clock().Before(r.retryAfter):
-			err := r.lastErr
+		case r.inflight != nil, r.clock().Before(r.retryAfter):
+			// TMDB is known to be failing: fail fast rather than queue every job behind a retry.
+			err := r.transientErr
 			r.mu.Unlock()
 
 			return nil, err
 		}
 
-		// Initialise in the background, detached from this caller's context, so that a cancelled or timed-out
-		// job neither fails initialisation for everyone nor keeps every other caller waiting on it.
+		// Initialize in the background, detached from this caller's context, so that a cancelled or timed-out
+		// job neither fails initialization for everyone nor keeps every other caller waiting on it.
 		inflight := make(chan struct{})
 		r.inflight = inflight
+		started = true
 		r.mu.Unlock()
 
-		go r.initialise(context.WithoutCancel(ctx), inflight)
+		go r.initialize(context.WithoutCancel(ctx), inflight)
 	}
 }
 
-func (r *requesterLazy) initialise(ctx context.Context, done chan struct{}) {
+func (r *requesterLazy) initialize(ctx context.Context, done chan struct{}) {
 	ctx, cancel := context.WithTimeout(ctx, initTimeout)
 	defer cancel()
 
@@ -115,19 +126,21 @@ func (r *requesterLazy) initialise(ctx context.Context, done chan struct{}) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	var permanent permanentError
+
 	switch {
 	case err == nil:
 		r.requester = requester
-		r.lastErr = nil
-	case errors.Is(err, ErrConfiguration), errors.Is(err, ErrUnauthorized):
-		r.err = err
+		r.transientErr = nil
+	case errors.As(err, &permanent):
+		r.permanentErr = permanent.error
 	default:
-		r.lastErr = err
+		r.transientErr = err
 		r.retryAfter = r.clock().Add(initRetryInterval)
 		r.logger.Warnw(
-			"TMDB client initialisation failed; will retry",
+			"TMDB client initialization failed; will retry",
 			"error", err,
-			"retryAfter", initRetryInterval,
+			"retryIn", initRetryInterval,
 		)
 	}
 
@@ -146,7 +159,7 @@ func (r *requesterLazy) clock() time.Time {
 
 func newRequester(ctx context.Context, config Config, logger *zap.SugaredLogger) (Requester, error) {
 	if !config.Enabled {
-		return nil, ErrConfiguration
+		return nil, permanentError{ErrConfiguration}
 	}
 
 	if config.APIKey == defaultTmdbAPIKey {
@@ -175,10 +188,16 @@ func newRequester(ctx context.Context, config Config, logger *zap.SugaredLogger)
 		logger: logger,
 	}
 
-	err := client{r}.ValidateAPIKey(ctx)
+	res, err := r.Request(ctx, "/authentication", nil, nil)
 	if errors.Is(err, ErrUnauthorized) {
 		if config.APIKey == defaultTmdbAPIKey {
-			return r, fmt.Errorf("default api key is invalid: %w", err)
+			err = fmt.Errorf("default api key is invalid: %w", err)
+			// A 403 can come from a proxy or CDN rather than TMDB, so only a 401 is final.
+			if res != nil && res.StatusCode() == http.StatusUnauthorized {
+				err = permanentError{err}
+			}
+
+			return nil, err
 		}
 
 		logger.Errorw("invalid api key, falling back to default", "error", err)
@@ -188,7 +207,11 @@ func newRequester(ctx context.Context, config Config, logger *zap.SugaredLogger)
 		return newRequester(ctx, config, logger)
 	}
 
-	return r, err
+	if err != nil {
+		return nil, err
+	}
+
+	return r, nil
 }
 
 func newRestyClient(config Config, logger *zap.SugaredLogger) *resty.Client {

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
+
+	"github.com/go-resty/resty/v2"
 )
 
 // TMDB v3 takes the API key only as the api_key query parameter (its Authorization header wants a v4 read access
@@ -39,11 +41,7 @@ func (e redactedError) Unwrap() error { return e.err }
 
 // redactingLogger is a resty.Logger that removes the API key from resty's own log lines.
 type redactingLogger struct {
-	logger interface {
-		Errorf(format string, v ...any)
-		Warnf(format string, v ...any)
-		Debugf(format string, v ...any)
-	}
+	logger resty.Logger
 }
 
 func (l redactingLogger) Errorf(format string, v ...any) {
