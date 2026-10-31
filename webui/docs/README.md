@@ -1,7 +1,6 @@
 # Magnes — working notes
 
-Reference for building Magnes, this fork's bundled Elm UI. Development now takes place
-in `webui/` alongside the backend. These pages are written **for agents**: they carry the facts a change needs,
+Reference for building Magnes, this fork's bundled Elm UI. These pages are written **for agents**: they carry the facts a change needs,
 with the file paths and the reasoning, so the same investigation is not repeated.
 
 The user-facing description of the project is [../README.md](../README.md). It describes
@@ -9,7 +8,7 @@ where Magnes is going; these pages describe what is actually true today.
 
 The root [AGENTS.md](../../AGENTS.md) owns repository instructions. Build and release
 integration is in [docs/hacking.md](../../docs/hacking.md); UI-specific behavior and
-historical design notes remain here.
+design notes live here.
 
 ## Which page, and when
 

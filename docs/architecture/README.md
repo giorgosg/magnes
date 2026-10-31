@@ -15,9 +15,9 @@ below is one territory on it. **Snapshot:** written against `trunk` at `9dc8862`
 | [interfaces.md](interfaces.md)   | Adding or changing anything externally reachable: GraphQL, Torznab, HTTP           |
 | [auth.md](auth.md)               | Resolving an identity, adding a permission, or reviewing an auth change            |
 | [moderation.md](moderation.md)   | Working on exact harmful-content decisions and private review evidence             |
-| [conventions.md](conventions.md) | Adding a subsystem, or working out why your edit was reverted by `task gen`        |
+| [conventions.md](conventions.md) | Adding a subsystem, a GraphQL field, or a new externally reachable surface         |
 
-The rules for _changing_ code live in [AGENTS.md](../../AGENTS.md). These pages describe
+The rules for _changing_ code live in [AGENTS.md](../../AGENTS.md) and [docs/rules/](../rules/). These pages describe
 what is there; that one describes what you must do about it.
 
 ## The shape in one paragraph
