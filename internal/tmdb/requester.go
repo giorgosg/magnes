@@ -39,5 +39,5 @@ func (r requester) Request(
 		}
 	}
 
-	return res, err
+	return res, redactAPIKeyError(err)
 }
