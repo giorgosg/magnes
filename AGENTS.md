@@ -1,238 +1,74 @@
-# Working on bitmagnet
+# Working on Magnes
 
-**This file is the single source of truth for working in this repo** — for a human, and
-for any coding agent regardless of which one. Read it before changing anything: it is
-short, and it carries the traps that decide whether a change survives `task gen` and CI,
-the ones that look like they worked locally and are silently undone later.
+Magnes is a fork of bitmagnet — a self-hosted BitTorrent DHT crawler, classifier and
+search engine in Go with a GraphQL API — that bundles its own Elm UI from `webui/`.
 
-Everything that does not belong in every session lives under [`docs/`](docs/README.md),
-reached by the pointers below.
+This file is the entry point for every agent and human. `CLAUDE.md` and other harness
+files only point here: add an instruction to this file or to a page it links, never to a
+harness file.
 
-Agent harnesses look for different filenames — `AGENTS.md`, `CLAUDE.md`, and others. In
-this repo **only this file has content**; every other such file is a one-line pointer
-here. If you are adding or correcting an instruction, add it here. Do not copy guidance
-into a harness-specific file, and do not let one drift into holding rules of its own: two
-files that disagree are worse than one file nobody read.
+## Every task
 
-## Which doc, and when
-
-**Starting cold, or coming back to a part of the tree you have not touched?** Read
-[docs/architecture/](docs/architecture/README.md) first. It is the map: one page per
-subsystem, describing what each one does, how the pieces connect, and where a new thing
-goes. It is written to get an agent oriented in one pass, and it is kept current with the
-code.
-
-| Read                                                     | When                                                                                  |
-| -------------------------------------------------------- | ------------------------------------------------------------------------------------- |
-| [docs/hacking.md](docs/hacking.md)                       | Making a change: toolchain, feature shape, GraphQL, migrations, testing at real scale |
-| [docs/architecture/](docs/architecture/README.md)        | Getting oriented: what each subsystem is, how it connects, where a change goes        |
-| [docs/porting.md](docs/porting.md)                       | Measuring, reviewing, or cherry-picking from a fork or an upstream PR                 |
-| [docs/forks/](docs/forks/README.md)                      | Choosing which downstream repo a change should come from                              |
-| [docs/upstream-status.md](docs/upstream-status.md)       | Sending a change upstream, or weighing whether the `next` rewrite makes it moot       |
-| [docs/integration-status.md](docs/integration-status.md) | Checking whether a candidate is already merged, queued, or rejected                   |
-| [webui/docs/](webui/docs/README.md)                      | Working on the Elm UI, its generated client, or browser tests                         |
-| [docs/auth.md](docs/auth.md)                             | Configuring or deploying authentication, or running behind a reverse proxy            |
-| [docs/adr/](docs/adr/)                                   | A decision constrains future changes and the reason will not be obvious from the code |
-| `docs/agents/`                                           | Filing an issue, applying a triage label, or looking for domain docs — **local only** |
-| `docs/issues/`                                           | Review findings: what is confirmed, fixed, or rejected, and why — **local only**      |
-| `docs/ideas/`                                            | Weighing what to work on next rather than how to do it — **local only**               |
-
-The last three rows are **local only** and absent from a fresh clone: `/docs/agents/` is
-gitignored outright, and the other two exist because a `*.local.md` file is present in
-this checkout. Never link to them from a tracked page.
-
-Several of those pages are dated **snapshots** — the fork survey, the upstream survey,
-every divergence count. Re-measure with the commands in [docs/porting.md](docs/porting.md)
-before acting on a number.
-
-That table is for reading. The same tree is where a change **writes back** what it
-learned — see [Every change lands with its documentation](#every-change-lands-with-its-documentation).
-
-`*.local.md` is gitignored at any depth and holds this checkout's private notes:
-environment details, unreviewed findings, and whatever authority the operator has granted.
-At the repo root, look for a local counterpart to this file — `AGENTS.local.md` or
-`CLAUDE.local.md`, whichever the checkout uses — and read it if it exists; it is where
-standing permissions such as "you may merge a reviewed PR" are recorded, and nothing
-grants those in tracked files. Consult the others under `docs/` when the topic matches.
-Leave all of them unstaged, unquoted, and uncopied into tracked files.
-
-## Before the first edit
-
-Run `git status --short` and `git branch --show-current`, and preserve unrelated and
-untracked work you find.
-
-## Trap 1: most of this repo is generated
-
-Change the source and regenerate. Editing the output _looks_ like it worked — it
-compiles, it passes locally — and the next `task gen` reverts it. CI regenerates
-everything and fails on any resulting diff.
-
-| Generated output                       | Source                                             | Regenerate with              |
-| -------------------------------------- | -------------------------------------------------- | ---------------------------- |
-| `internal/gql/gql.gen.go` (~24k lines) | `graphql/**/*.graphqls`, `internal/gql/gqlgen.yml` | `task gen-gql`               |
-| `internal/database/dao/*.gen.go`       | `internal/model`                                   | `task gen-gorm`              |
-| `internal/gql/enums/enums.go`          | Go enum types                                      | `task gen-gql-enums`         |
-| `internal/protobuf/bitmagnet.pb.go`    | `internal/protobuf/bitmagnet.proto`                | `task gen-protoc`            |
-| `internal/**/mocks/*.go`               | interfaces and `.mockery.yml`                      | `task gen-mockery`           |
-| `schemas/classifier-0.1.json`          | classifier types                                   | `task gen-classifier-schema` |
-
-`task gen` runs every generator in order; use the narrow target while iterating.
-
-## Trap 2: Prettier is pinned
-
-`task lint` runs Prettier over the whole tree, and `.prettierignore` does not exclude
-`*.md`, so markdown is linted too. Formatting differs between 3.x releases, so a stray
-version passes locally and fails CI.
-
-Always use the repo's own copy — exact version `3.3.3` in the root `package.json`, installed by `task install-tools`.
-`task lint-prettier` calls it by path for exactly this reason, and it is deliberately
-absent from the Nix shell so nothing else can win on `PATH`. `npx prettier@3` resolves to
-a later 3.x and is the specific mistake to avoid.
-
-```bash
-./node_modules/.bin/prettier --write AGENTS.md 'docs/**/*.md'
-```
-
-## Trap 3: migration numbers collide across forks
-
-Upstream is at `00020`; forks in circulation add `00023` and `00033`. Renumber anything
-cherry-picked to the next free slot — `ls migrations/` for the current high-water mark,
-which moves as this tree adds its own — and keep every number that has already been
-applied to a live database.
-
-```bash
-task create-migration NAME=add_my_thing   # goose -s create, in ./migrations
-```
-
-That target shells out to a `goose` binary, which the Nix shell does **not** provide —
-install it separately. `task migrate` needs no binary; it runs goose as a library through
-`./internal/dev`.
-
-Run `task gen-gorm` afterwards when the change also touches `internal/model`.
-
-## Every change lands with its documentation
-
-A merged PR updates `docs/` wherever the change makes a page wrong or incomplete. This is
-part of the change, not follow-up work: a ledger that stops mid-history and an
-architecture page describing code that moved are worse than no page at all, because they
-are read as current. Ask which of these the change touched, and update it in the same PR.
-
-| If the change…                                        | Update                                                                                           |
-| ----------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| is merged at all                                      | [docs/integration-status.md](docs/integration-status.md) — one row, with what was seen red       |
-| alters a default, a config key, or a deployment       | the operator page for it, e.g. [docs/auth.md](docs/auth.md)                                      |
-| moves a subsystem boundary, or adds or removes one    | the matching page under [docs/architecture/](docs/architecture/README.md)                        |
-| settles a decision that constrains later work         | a new record in [docs/adr/](docs/adr/)                                                           |
-| changes the toolchain, a generator, or the test setup | [docs/hacking.md](docs/hacking.md), and this file if it is a trap                                |
-| rejects a candidate, or kills one with a measurement  | [docs/integration-status.md](docs/integration-status.md) — the rejected section, with the number |
-| resolves or reprioritises a review finding            | `docs/issues/` if the checkout has it — local, and stays untracked                               |
-
-"Where applicable" is the operative phrase — a pure refactor with no visible effect
-usually touches nothing. But answer the question explicitly rather than skipping it, and
-say in the PR body which pages you checked and why none needed changing. A measurement
-that rejects an idea is worth recording precisely because the next reader would otherwise
-repeat it.
-
-## Every change lands with a test seen **red**
-
-An observable behaviour change ships with a test that was watched failing against the
-unfixed code. Reproduce first, apply the smallest fix, then run the focused test and the
-suite around it. A test written after the fix and never seen red proves nothing, and
-weakening an existing test to make a port pass is not an option.
-
-This bar exists because it has already been earned: cherry-picks in this repo have
-compiled, vetted, and passed the whole suite while carrying a shutdown deadlock and a
-cache that answered the wrong question. `dhtcrawler`, `importer`, and `processor` have little coverage, so a change there gets a focused regression test or a
-standalone reproduction.
-
-PostgreSQL tests use `internal/database/dbtest`, which creates and drops an isolated,
-fully migrated database per test:
-
-```go
-db := dbtest.New(t) // db.Gorm, db.Query, db.Pool, db.DSN, db.Name
-```
-
-They **skip** when `TEST_POSTGRES_DSN` is unset, so a bare `go test ./...` stays offline
-and proves less than it appears to. CI supplies a PostgreSQL 16 service.
-
-```bash
-TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/postgres' go test ./...
-```
-
-Tests that need a populated index rather than an empty one use `dbtest.NewSeeded(t)`,
-which clones the local btm-testdb fixture template; those **skip** unless
-`TEST_POSTGRES_TEMPLATE_DSN` names the fixture instance, the same way — a checkout
-without fixtures runs everything that does not need them. See
-[docs/hacking.md](docs/hacking.md).
-
-## Shapes to follow
-
-- **A subsystem** is `internal/<feature>/` with `config.go`, `factory.go`, the
-  implementation, and `<feature>fx/module.go`, plus one registration line in
-  `internal/app/appfx/module.go`. Copy `internal/tmdb` (external API client),
-  `internal/torznab` (HTTP surface), or `internal/worker` (long-running).
-- **A GraphQL change** edits `graphql/schema/*.graphqls`, runs `task gen-gql`, implements
-  the resolver in `internal/gql/resolvers/`. External clients regenerate from the schema
-  in their own projects.
-- **A new interface is externally reachable.** Upstream `main` has no authentication and
-  allows `*` CORS, so treat any new HTTP, GraphQL, or Torznab surface as open unless the
-  deployment supplies its own boundary. See [docs/auth.md](docs/auth.md).
+- Start with `git status --short` and `git branch --show-current`, and leave unrelated and
+  untracked work (`.scratch/`, `*.local.md`) as you found it.
+- Read `CLAUDE.local.md` or `AGENTS.local.md` at the root if present: it holds this
+  checkout's environment and any standing authority. `*.local.md` is gitignored at any
+  depth; keep every such file, and the local-only paths in the table below, out of
+  tracked files and links.
+- Commit, push and merge when the user asks, or under standing authority recorded in a
+  `*.local.md` file. Absent both, stop before merging and say so.
+- Cut topic branches from `trunk`. `main` is a pristine mirror of `upstream/main`.
+- Generated files change only through their source and generator: `*.gen.go`,
+  `internal/gql/enums/enums.go`, `*.pb.go`, `mocks/`, `schemas/classifier-0.1.json`.
+  Editing the output passes locally and is reverted by the next `task gen`.
+- A behaviour change ships with a test seen **red** against the unfixed code.
+- A PR updates every doc page it makes wrong, in the same PR.
 
 ## Commands
 
-[`Taskfile.yml`](Taskfile.yml) is authoritative — this lists only the behaviour it will
-not tell you.
+Tasks run through go-task ([`Taskfile.yml`](Taskfile.yml)); the toolchain comes from
+`nix develop`. These are the commands whose behaviour the Taskfile does not tell you:
 
 ```bash
-task test-go          # DB tests skip silently without TEST_POSTGRES_DSN
-task lint             # golangci-lint and Prettier
-task lint-golangci    # just the Go linter; must end in "0 issues."
-task migrate          # needs a running PostgreSQL; docker-compose.yml brings one up
-go build ./... && go vet ./...   # quickest Go sanity check
+task gen                                      # every generator; narrow targets in docs/rules/generated-code.md
+git diff --exit-code                          # after any generator: CI's clean-tree check
+./node_modules/.bin/prettier --write <files>  # pinned 3.3.3; Markdown is linted too
+nix develop --command task lint               # golangci-lint, elm-format + elm-review, Prettier
+# Without the DSN every database test skips silently and the run still looks green:
+TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/postgres' go test ./...
 ```
 
-The fork ships the Elm UI in `webui/`. `task build` (also the default `task`) installs its
-locked npm dependencies, builds the optimized bundle, and embeds it with the `webui` Go
-build tag. Docker and GoReleaser do the same. Plain `go build` and `task build-backend`
-remain backend-only; `go build -tags webui` requires `task build-ui` first. Never commit
-`webui/public/main.js` or machine-specific `webui/public/config.js`.
+Before handing off, run the checks covering the touched area and report every check that
+skipped or could not run, and why.
 
-`task install-tools` installs both root formatting tools and UI tools. `task test-ui`
-runs Elm tests; `task lint-ui` runs elm-format and elm-review. Before implementing an Elm
-feature, read [webui/docs/elm-development.md](webui/docs/elm-development.md) for package
-discovery. Use the terms in [webui/CONTEXT.md](webui/CONTEXT.md) for identity and permissions.
+## Read when
 
-`flake.nix` supplies Go, go-task, Node 22, golangci-lint, and protoc;
-reach for `nix develop` or `direnv allow` when the host lacks them. PostgreSQL and `goose`
-are separate, and so is Prettier — see Trap 2.
+| Read                                                                                       | When                                                                                           |
+| ------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------- |
+| [docs/architecture/](docs/architecture/README.md)                                          | Starting cold, or entering a subsystem you have not touched: what it does, where a change goes |
+| [docs/architecture/conventions.md](docs/architecture/conventions.md)                       | Adding a subsystem, a GraphQL field, or any new HTTP, GraphQL or Torznab surface               |
+| [docs/rules/generated-code.md](docs/rules/generated-code.md)                               | Changing a generated file's source: which generator, which task                                |
+| [docs/rules/linting.md](docs/rules/linting.md)                                             | Lint fails, or you are choosing which Prettier or golangci-lint to run                         |
+| [docs/rules/migrations.md](docs/rules/migrations.md)                                       | Adding, renumbering or cherry-picking a migration                                              |
+| [docs/rules/testing.md](docs/rules/testing.md)                                             | Writing a test, or deciding whether a green run proved anything                                |
+| [docs/rules/documentation.md](docs/rules/documentation.md)                                 | Opening a PR: which pages it must update                                                       |
+| [docs/rules/branches.md](docs/rules/branches.md)                                           | Cutting a branch, preparing an upstream PR, or taking a commit from a fork                     |
+| [docs/hacking.md](docs/hacking.md)                                                         | Toolchain setup, building the bundled UI, CI behaviour, testing at realistic scale             |
+| [docs/porting.md](docs/porting.md)                                                         | Measuring, reviewing or cherry-picking from a fork or an upstream PR                           |
+| [docs/forks/](docs/forks/README.md)                                                        | Choosing which downstream repo a change should come from                                       |
+| [docs/upstream-status.md](docs/upstream-status.md)                                         | Sending a change upstream, or weighing whether the `next` rewrite makes it moot                |
+| [docs/integration-status.md](docs/integration-status.md)                                   | Checking whether a candidate is already merged, queued or rejected                             |
+| [docs/auth.md](docs/auth.md)                                                               | Configuring or deploying authentication, or running behind a reverse proxy                     |
+| [docs/moderation.md](docs/moderation.md)                                                   | Moderator permissions, private evidence and decisions                                          |
+| [docs/moderation-ban-file.md](docs/moderation-ban-file.md)                                 | The frozen ban-file format, its provenance and membership privacy limit                        |
+| [docs/exchange-file.md](docs/exchange-file.md)                                             | Exchange file v1: shareable torrent records, `check`, `export` (full and `--since`), `import`  |
+| [docs/enhancement.md](docs/enhancement.md)                                                 | LLM metadata enhancement and `bitmagnet enhancement evaluate`                                  |
+| [docs/adr/](docs/adr/)                                                                     | Reversing a past decision, or making one whose reason the code will not show                   |
+| [CONTEXT.md](CONTEXT.md), [GLOSSARY.md](GLOSSARY.md), [webui/CONTEXT.md](webui/CONTEXT.md) | Naming a domain concept: principals and permissions, catalogue terms, UI identity language     |
+| [webui/docs/](webui/docs/README.md), [elm-development.md](webui/docs/elm-development.md)   | Elm UI work, its generated client, browser tests; the second before designing any Elm feature  |
+| `docs/agents/`                                                                             | Filing an issue, applying a triage label, or looking for domain docs — **local only**          |
+| `docs/issues/`                                                                             | Review findings: what is confirmed, fixed or rejected, and why — **local only**                |
+| `docs/ideas/`                                                                              | Weighing what to work on next rather than how — **local only**                                 |
 
-**Lint from the Nix shell, never from a golangci-lint on your `PATH`.** The linter has
-to be built with a Go at least as new as the toolchain compiling the code, so the flake
-pins both together and CI runs `task lint` inside `nix develop` rather than installing a
-linter of its own. A mismatch does not produce a tidy error: too old and it refuses the
-module outright, too new for the compiler and it panics mid-run. Version strings do not
-settle it either — a `go install`ed binary reports the same version as the official
-release while being built with a different Go.
-
-Before handing off, run the smallest relevant checks plus everything covering the touched
-area. After running a generator, reproduce CI's clean-tree expectation with `git diff
---exit-code`.
-Report every check that skipped or could not run, and why.
-
-## Branches
-
-- **`main` is a pristine mirror of `upstream/main`.** Leave it untouched so
-  `git merge --ff-only upstream/main` always works.
-- **`trunk` is this fork's integration branch** — docs plus accepted patches. Current work
-  is integration: evaluate selected commits from forks and upstream PRs, port each
-  coherent change through a focused PR, merge the reviewed result here.
-- **Cut a topic branch from `main`**, not `trunk`, so anything destined for an upstream PR
-  contains only that change. `git cherry-pick -x` records provenance.
-- **Committing, pushing, and merging wait for the user to ask**, or for standing authority
-  recorded in a `*.local.md` file. Absent that, stop before merging and say so.
-
-Treat an imported commit as a candidate, not a trusted patch: a fork's commit message
-describes intent, not behaviour, and `perf:` has been observed on changes that alter
-semantics. Read the whole substantive diff, verify the claimed behaviour, and give it the
-red test above. [docs/porting.md](docs/porting.md) has the commands that make that diff
-readable.
+Pages carrying fork, upstream or divergence counts are dated **snapshots**; re-measure
+with [docs/porting.md](docs/porting.md) before acting on a number.

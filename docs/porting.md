@@ -1,8 +1,8 @@
 # Porting from forks and upstream PRs
 
 How to measure a fork honestly, read its diff without drowning in generated output, and
-get one coherent change onto a topic branch. [AGENTS.md](../AGENTS.md#branches) owns the
-branch rules and the red-test bar; this page is the commands.
+get one coherent change onto a topic branch. [rules/branches.md](rules/branches.md) owns the
+branch rules and [rules/testing.md](rules/testing.md) the red-test bar; this page is the commands.
 
 ## Remotes
 
@@ -122,10 +122,10 @@ dao types came out byte-identical to the source lineage's after `task gen-gorm`.
 
 ## Taking the change
 
-One topic branch per feature, based on `upstream/main`:
+One topic branch per feature, based on `trunk`:
 
 ```bash
-git switch -c feat/dht-rate-limit upstream/main
+git switch -c feat/dht-rate-limit trunk
 git cherry-pick -x <sha>          # -x records the source commit
 ```
 

@@ -111,16 +111,8 @@ Goose SQL in [`migrations/`](../../migrations), embedded and run through
 Current high-water mark is `00030_source_scraped_at.sql`; `ls migrations/` rather than trusting this
 sentence.
 
-**Forks number theirs independently and the numbers collide.** Anything cherry-picked gets
-renumbered to the next free slot, and no number already applied to a live database is ever
-reused. AGENTS.md Trap 3 has the rule.
-
-```bash
-task create-migration NAME=add_my_thing   # needs a goose binary; the Nix shell has none
-task migrate                              # runs goose as a library, no binary needed
-```
-
-Run `task gen-gorm` afterwards if the change touches `internal/model`.
+Forks number theirs independently and the numbers collide;
+[rules/migrations.md](../rules/migrations.md) has the renumbering rule and the commands.
 
 ## Testing against a real database
 

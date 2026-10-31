@@ -2,8 +2,7 @@
 
 The default web UI for this bitmagnet fork, written in [Elm](https://elm-lang.org).
 
-Magnes was developed in a separate repository and imported here with its history.
-Backend and UI development now happen together. From the repository root, `task build`
+Backend and UI development happen together. From the repository root, `task build`
 builds both into one executable; Docker images and releases include the same UI at `/ui/`.
 Use `task build-backend` when only the backend is needed.
 

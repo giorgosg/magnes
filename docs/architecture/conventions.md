@@ -1,8 +1,7 @@
 # Conventions
 
-The patterns to copy, and the two that will silently undo your work if you do not know
-them. [AGENTS.md](../../AGENTS.md) is the operative version of the rules; this page
-explains the shapes behind them.
+The patterns to copy when adding code. The rules for changing it live under
+[docs/rules/](../rules/); this page explains the shapes behind them.
 
 ## A subsystem
 
@@ -44,59 +43,20 @@ plus a registration line, not edits threaded through existing code.
   subsystem" and "which failure" — see `auth/api_key/errors.go` and how
   `identity/authenticator_api_key.go` interrogates them.
 
-## Trap 1: most of this repo is generated
+## A GraphQL change
 
-Change the source and regenerate. Editing the output _looks_ like it worked — it compiles
-and passes locally — and the next `task gen` reverts it. CI regenerates everything and
-fails on any diff.
+Edit `graphql/schema/*.graphqls`, run `task gen-gql`, and implement the resolver in
+`internal/gql/resolvers/`. External clients regenerate from the schema in their own
+projects — see [hacking.md](../hacking.md#changing-the-graphql-api).
 
-| Generated                                                   | Source                                             | Command                      |
-| ----------------------------------------------------------- | -------------------------------------------------- | ---------------------------- |
-| `internal/gql/gql.gen.go` (~24k lines)                      | `graphql/**/*.graphqls`, `internal/gql/gqlgen.yml` | `task gen-gql`               |
-| `internal/database/dao/*.gen.go`, `internal/model/*.gen.go` | `internal/model`                                   | `task gen-gorm`              |
-| `internal/gql/enums/enums.go`                               | Go enum types                                      | `task gen-gql-enums`         |
-| `internal/protobuf/bitmagnet.pb.go`                         | `internal/protobuf/bitmagnet.proto`                | `task gen-protoc`            |
-| `internal/**/mocks/*.go`                                    | interfaces and `.mockery.yml`                      | `task gen-mockery`           |
-| `schemas/classifier-0.1.json`                               | classifier types                                   | `task gen-classifier-schema` |
+## A new surface is open by default
 
-`task gen` runs them all in order; use the narrow target while iterating.
+Upstream `main` has no authentication and allows `*` CORS, so treat any new HTTP, GraphQL
+or Torznab surface as reachable by anyone unless the deployment supplies its own boundary.
+See [auth.md](auth.md) and the operator page [docs/auth.md](../auth.md).
 
-## Trap 2: Prettier is pinned, and it lints markdown
+## The rules
 
-`.prettierignore` does not exclude `*.md`, and formatting differs between 3.x releases, so
-a stray version passes locally and fails CI. Use the repo's own copy — deliberately absent
-from the Nix shell so nothing else wins on `PATH`. Install it with
-`task install-tools` from the root package:
-
-```bash
-./node_modules/.bin/prettier --write AGENTS.md 'docs/**/*.md'
-```
-
-## Trap 3: migration numbers collide across forks
-
-See [data.md](data.md#migrations).
-
-## Testing
-
-Every observable behaviour change ships with a test that was **watched failing** against
-the unfixed code. The bar exists because it has been earned: cherry-picks here have
-compiled, vetted and passed the whole suite while carrying a shutdown deadlock and a cache
-that answered the wrong question.
-
-`dhtcrawler`, `importer` and `processor` have little coverage, so a change
-there gets a focused regression test or a standalone reproduction.
-
-Database tests **skip silently** without `TEST_POSTGRES_DSN`:
-
-```bash
-TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:5432/postgres' go test ./...
-```
-
-A test that needs a populated index rather than an empty one calls `dbtest.NewSeeded(t)`,
-which skips on a second variable, `TEST_POSTGRES_TEMPLATE_DSN` — see [data.md](data.md).
-
-## Lint
-
-`golangci-lint` must come from `nix develop` — it has to be built with a Go at least as
-new as the toolchain compiling the code, and a version string does not settle it. A clean
-tree reports **0 issues**, so every finding is yours.
+Generated files, the pinned Prettier, migration numbers, the red-test bar and the linter
+each have one page under [docs/rules/](../rules/), linked from the root
+[AGENTS.md](../../AGENTS.md#read-when).

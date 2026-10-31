@@ -1,6 +1,6 @@
 # Hacking on bitmagnet
 
-Orientation for a first change. [AGENTS.md](../AGENTS.md) has the rules — the generated
+Orientation for a first change. [rules/](rules/) has the rules — the generated
 files, the pinned Prettier, the migration numbers, the red test — and this page has the
 detail behind them. [architecture/](architecture/README.md) covers _what_ the pieces are;
 this covers _how to work on them_.
@@ -18,7 +18,7 @@ Two things the shell does **not** supply: PostgreSQL, which most targets want an
 `task create-migration` needs.
 
 Everything is driven by [`Taskfile.yml`](../Taskfile.yml) (go-task, not `make`). One
-target worth knowing that AGENTS.md doesn't list:
+target worth knowing:
 
 ```bash
 task serve-website   # the Astro/Starlight site under website/
@@ -111,8 +111,8 @@ and weekly.
 ## Adding a subsystem
 
 The codebase is uniformly wired with `uber-go/fx`, and following the existing shape is
-much easier than fighting it. AGENTS.md gives the four files and the one registration
-line; the parts that are easy to get wrong:
+much easier than fighting it. [architecture/conventions.md](architecture/conventions.md#a-subsystem) gives the four files
+and the one registration line; the parts that are easy to get wrong:
 
 - **Config is picked up automatically.** The struct in `config.go` is registered with
   `configfx` by the module; defaults belong in its constructor, not in a separate

@@ -3,7 +3,7 @@
 Everything in `internal/dhtcrawler` plus the protocol packages it drives. This is the
 path that turns "a stranger on the internet mentioned a hash" into rows in `torrents`.
 
-**It has little test coverage.** AGENTS.md names it explicitly. A change here gets a
+**It has little test coverage.** [rules/testing.md](../rules/testing.md) names it explicitly. A change here gets a
 focused regression test or a standalone reproduction.
 
 ## The pipeline
