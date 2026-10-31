@@ -65,9 +65,26 @@ type sourcePlan struct {
 	publishedAt, scrapedAt *time.Time
 }
 
+// The longest strings the btree indexes over them accept, in bytes. PostgreSQL refuses an
+// index entry larger than 2704 bytes, a third of a default 8 KiB page. An entry is an
+// 8-byte header and then the key's columns: a long text value takes a 4-byte length and
+// is aligned to 4 bytes, and an infohash takes 21 bytes. A value that compresses may be
+// stored longer, but how well it compresses is not known before the write, so these are
+// the limits for one that does not.
+const (
+	maxNameBytes       = 2692 // torrents_name_idx (name): 2704 − 8 − 4
+	maxPathBytes       = 2668 // torrent_files_pkey (info_hash, path): 2704 − 8 − 21 − 3 alignment − 4
+	maxSourceNameBytes = 2671 // torrents_torrent_sources_pkey (source, info_hash): 2704 − 8 − 4 − 21
+)
+
 // plan translates one record, or reports why it cannot be stored.
 func (i *ExchangeImporter) plan(record exchange.Record, options ExchangeOptions, d *drops) (recordPlan, bool) {
 	p := recordPlan{hash: record.InfoHash, name: record.Name, private: record.Private.Val}
+
+	if len(record.Name) > maxNameBytes {
+		d.add(ReasonOutOfRange, "name", "")
+		return p, false
+	}
 
 	if record.Size.Valid {
 		if record.Size.Val > math.MaxInt64 {
@@ -80,6 +97,11 @@ func (i *ExchangeImporter) plan(record exchange.Record, options ExchangeOptions,
 
 	for _, source := range record.Sources.Val {
 		s := sourcePlan{name: exchange.PrefixSourceName(options.Origin, source.Name)}
+
+		if len(s.name) > maxSourceNameBytes {
+			d.add(ReasonOutOfRange, "sources[].source", "")
+			return p, false
+		}
 
 		var ok bool
 		if s.seeders, ok = peerCount(source.Seeders); !ok {
@@ -270,6 +292,14 @@ func (i *ExchangeImporter) planFiles(p *recordPlan, record exchange.Record) (str
 		p.filesStatus = model.FilesStatusMulti
 		p.filesCount = ptrInt32(len(files))
 		p.files = files
+	}
+
+	// Only the rows that will be stored are checked: padding entries and files past the
+	// threshold are not written, so their paths cannot fail a write.
+	for _, f := range p.files {
+		if len(f.Path) > maxPathBytes {
+			return "files[].path", false
+		}
 	}
 
 	return "", true

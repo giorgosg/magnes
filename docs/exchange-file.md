@@ -323,6 +323,14 @@ once the export has succeeded, so a failed export leaves any previous file intac
 - **Skipped records** are counted. A record is skipped when:
   - a value is too large to store, which is also reported: a size above 2⁶³−1, or a file
     index or peer count above 2³¹−1;
+  - a string is longer than the index over it accepts, which is also reported: a `name`
+    over 2692 bytes, a stored file `path` over 2668 bytes, or a source over 2671 bytes
+    once its origin prefix is added. Each is PostgreSQL's btree entry limit, less the
+    rest of the entry, for a string that does not compress, so it holds whatever the
+    string contains. A padding entry, a file past the threshold and a single-file
+    torrent's one entry are not stored as file rows, so their paths are not limited. The
+    check is made before the write, so it skips a record whose torrent already exists
+    too;
   - its torrent is deleted locally while the record's batch is being written.
 - **Classification:** new and changed torrents are queued for classification.
 - **Batches:** the import commits every 100 records, or sooner once their lines total

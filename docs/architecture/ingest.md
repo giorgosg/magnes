@@ -139,6 +139,10 @@ the crawler.
   - A file list is taken only `WHERE files_status IN ('no_info', 'over_threshold')`.
   - Peer counts merge inside the upsert.
   - Name, size and private are written only by the insert of a new torrent.
+- **A record the schema cannot hold is skipped before the batch is written,** by `plan`
+  in `exchange_write.go`: a number too large for its column, or a name, file path or
+  source too long for its btree index. One such record would otherwise fail the
+  statement, and with it the batch and the import.
 - **The batch's torrents are locked first, in infohash order,** as the crawler's source
   write does. The first statement inserts the new torrents, `ON CONFLICT DO NOTHING`.
   The second takes `FOR KEY SHARE` on all of them, so no foreign key fails later in the
