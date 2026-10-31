@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"sync"
 	"time"
 
@@ -16,13 +17,37 @@ import (
 
 // requesterLazy defers instantiation of the requester (and possible failure) until the first request is made,
 // avoiding failure when the TMDB client is not needed.
+//
+// Only a permanent failure (TMDB disabled, or the default API key rejected with 401) is kept for the life of the
+// process. Any other failure (DNS, dial, timeout, 5xx) is reported until initRetryInterval has passed, and the next
+// request after that tries again, so a network outage at startup does not disable TMDB until restart.
 type requesterLazy struct {
-	once      sync.Once
-	config    Config
-	logger    *zap.SugaredLogger
-	err       error
-	requester Requester
+	config Config
+	logger *zap.SugaredLogger
+	// build constructs and validates the underlying requester; nil means newRequester.
+	build func(ctx context.Context) (Requester, error)
+	// now is the clock for the retry window; nil means time.Now.
+	now func() time.Time
+
+	mu           sync.Mutex
+	requester    Requester
+	permanentErr error
+	transientErr error         // returned until retryAfter
+	retryAfter   time.Time     // when the next initialization may start after transientErr
+	inflight     chan struct{} // closed when the running initialization finishes
 }
+
+const (
+	// initRetryInterval is the minimum time between initialization attempts after a transient failure.
+	initRetryInterval = 30 * time.Second
+	// initTimeout bounds one initialization, including resty's own retries and the default-key fallback.
+	initTimeout = 2 * time.Minute
+)
+
+// permanentError marks an initialization failure that retrying cannot fix.
+type permanentError struct{ error }
+
+func (e permanentError) Unwrap() error { return e.error }
 
 func (r *requesterLazy) Request(
 	ctx context.Context,
@@ -30,20 +55,111 @@ func (r *requesterLazy) Request(
 	queryParams map[string]string,
 	result interface{},
 ) (*resty.Response, error) {
-	r.once.Do(func() {
-		r.requester, r.err = newRequester(ctx, r.config, r.logger)
-	})
-
-	if r.err != nil {
-		return nil, r.err
+	requester, err := r.get(ctx)
+	if err != nil {
+		return nil, err
 	}
 
-	return r.requester.Request(ctx, path, queryParams, result)
+	return requester.Request(ctx, path, queryParams, result)
+}
+
+func (r *requesterLazy) get(ctx context.Context) (Requester, error) {
+	started := false
+
+	for {
+		r.mu.Lock()
+
+		switch {
+		case r.requester != nil:
+			requester := r.requester
+			r.mu.Unlock()
+
+			return requester, nil
+		case r.permanentErr != nil:
+			err := r.permanentErr
+			r.mu.Unlock()
+
+			return nil, err
+		case r.inflight != nil && (started || r.transientErr == nil):
+			// The caller that started this attempt waits for its result, as does everyone on the first one.
+			inflight := r.inflight
+			r.mu.Unlock()
+
+			select {
+			case <-inflight:
+				continue
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		case r.inflight != nil, r.clock().Before(r.retryAfter):
+			// TMDB is known to be failing: fail fast rather than queue every job behind a retry.
+			err := r.transientErr
+			r.mu.Unlock()
+
+			return nil, err
+		}
+
+		// Initialize in the background, detached from this caller's context, so that a cancelled or timed-out
+		// job neither fails initialization for everyone nor keeps every other caller waiting on it.
+		inflight := make(chan struct{})
+		r.inflight = inflight
+		started = true
+		r.mu.Unlock()
+
+		go r.initialize(context.WithoutCancel(ctx), inflight)
+	}
+}
+
+func (r *requesterLazy) initialize(ctx context.Context, done chan struct{}) {
+	ctx, cancel := context.WithTimeout(ctx, initTimeout)
+	defer cancel()
+
+	build := r.build
+	if build == nil {
+		build = func(ctx context.Context) (Requester, error) {
+			return newRequester(ctx, r.config, r.logger)
+		}
+	}
+
+	requester, err := build(ctx)
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	var permanent permanentError
+
+	switch {
+	case err == nil:
+		r.requester = requester
+		r.transientErr = nil
+	case errors.As(err, &permanent):
+		r.permanentErr = permanent.error
+	default:
+		r.transientErr = err
+		r.retryAfter = r.clock().Add(initRetryInterval)
+		r.logger.Warnw(
+			"TMDB client initialization failed; will retry",
+			"error", err,
+			"retryIn", initRetryInterval,
+		)
+	}
+
+	r.inflight = nil
+
+	close(done)
+}
+
+func (r *requesterLazy) clock() time.Time {
+	if r.now == nil {
+		return time.Now()
+	}
+
+	return r.now()
 }
 
 func newRequester(ctx context.Context, config Config, logger *zap.SugaredLogger) (Requester, error) {
 	if !config.Enabled {
-		return nil, ErrConfiguration
+		return nil, permanentError{ErrConfiguration}
 	}
 
 	if config.APIKey == defaultTmdbAPIKey {
@@ -61,15 +177,7 @@ func newRequester(ctx context.Context, config Config, logger *zap.SugaredLogger)
 			requester: requesterSemaphore{
 				requester: requesterLimiter{
 					requester: requester{
-						resty: resty.New().
-							SetBaseURL(config.BaseURL).
-							SetQueryParam("api_key", config.APIKey).
-							SetRetryCount(3).
-							SetRetryWaitTime(2 * time.Second).
-							SetRetryMaxWaitTime(20 * time.Second).
-							SetTimeout(10 * time.Second).
-							EnableTrace().
-							SetLogger(logger),
+						resty: newRestyClient(config, logger),
 					},
 					limiter: rate.NewLimiter(rate.Every(config.RateLimit), config.RateLimitBurst),
 				},
@@ -80,10 +188,16 @@ func newRequester(ctx context.Context, config Config, logger *zap.SugaredLogger)
 		logger: logger,
 	}
 
-	err := client{r}.ValidateAPIKey(ctx)
+	res, err := r.Request(ctx, "/authentication", nil, nil)
 	if errors.Is(err, ErrUnauthorized) {
 		if config.APIKey == defaultTmdbAPIKey {
-			return r, fmt.Errorf("default api key is invalid: %w", err)
+			err = fmt.Errorf("default api key is invalid: %w", err)
+			// A 403 can come from a proxy or CDN rather than TMDB, so only a 401 is final.
+			if res != nil && res.StatusCode() == http.StatusUnauthorized {
+				err = permanentError{err}
+			}
+
+			return nil, err
 		}
 
 		logger.Errorw("invalid api key, falling back to default", "error", err)
@@ -93,5 +207,21 @@ func newRequester(ctx context.Context, config Config, logger *zap.SugaredLogger)
 		return newRequester(ctx, config, logger)
 	}
 
-	return r, err
+	if err != nil {
+		return nil, err
+	}
+
+	return r, nil
+}
+
+func newRestyClient(config Config, logger *zap.SugaredLogger) *resty.Client {
+	return resty.New().
+		SetBaseURL(config.BaseURL).
+		SetQueryParam("api_key", config.APIKey).
+		SetRetryCount(3).
+		SetRetryWaitTime(2 * time.Second).
+		SetRetryMaxWaitTime(20 * time.Second).
+		SetTimeout(10 * time.Second).
+		EnableTrace().
+		SetLogger(redactingLogger{logger})
 }
