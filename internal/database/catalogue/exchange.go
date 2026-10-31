@@ -23,8 +23,15 @@ type Beginner interface {
 	BeginTx(ctx context.Context, options pgx.TxOptions) (pgx.Tx, error)
 }
 
-// DefaultExchangePageSize is how many torrents one keyset page reads.
+// DefaultExchangePageSize is how many torrents one page reads.
 const DefaultExchangePageSize = 1000
+
+// DefaultExchangeOverlap is how far before Since an incremental export should re-read.
+// updated_at is stamped from the writer's clock before its transaction commits, so a
+// change can become visible after an export whose snapshot already passed its time, and
+// the hosts that write the catalogue may run behind the database's clock. Re-sending a
+// record is harmless, because an import is idempotent.
+const DefaultExchangeOverlap = time.Hour
 
 // ExchangeOptions controls an exchange-file export.
 type ExchangeOptions struct {
@@ -32,6 +39,13 @@ type ExchangeOptions struct {
 	Producer exchange.Producer
 	// IncludeTags writes each torrent's local tags as magnes.tags.
 	IncludeTags bool
+	// Since makes the export incremental: only torrents whose exchanged data changed at
+	// or after it are written.
+	Since model.Maybe[time.Time]
+	// Overlap re-reads changes stamped this long before Since; see
+	// DefaultExchangeOverlap, which a caller should pass unless it has a reason not to.
+	// Zero re-reads nothing. It does not change the header's since.
+	Overlap time.Duration
 	// PageSize bounds how many torrents are held in memory at once. Zero means
 	// DefaultExchangePageSize.
 	PageSize int
@@ -39,8 +53,9 @@ type ExchangeOptions struct {
 
 // ExportExchange writes the visible catalogue as an exchange file: one header, then one
 // record per torrent in infohash order. Pending and banned torrents are never written.
-// It reads one read-only repeatable-read snapshot in keyset pages, so memory stays flat
-// however large the catalogue is. The caller must discard partial output on error.
+// With Since, only torrents changed since then are written.
+// It reads one read-only repeatable-read snapshot in pages, so memory stays flat however
+// large the catalogue is. The caller must discard partial output on error.
 func ExportExchange(ctx context.Context, db Beginner, output io.Writer, options ExchangeOptions) error {
 	pageSize := options.PageSize
 	if pageSize <= 0 {
@@ -53,7 +68,18 @@ func ExportExchange(ctx context.Context, db Beginner, output io.Writer, options 
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	// The first statement takes the snapshot, so exportedAt is never later than it.
+	// A table rewrite, such as a migration's ALTER TABLE, is not MVCC-safe: a snapshot
+	// taken before it commits reads the rewritten table as empty, and the export would
+	// succeed having written nothing. Locking every table a record is built from before
+	// the snapshot exists waits for any rewrite in flight, and blocks new ones until the
+	// export ends. LOCK TABLE does not take the snapshot. Every table the readers below
+	// and declareChanged read must be in this list.
+	if _, err = tx.Exec(ctx, `LOCK TABLE torrents, torrent_files, torrents_torrent_sources, torrent_contents,
+ torrent_tags, moderation_decisions IN ACCESS SHARE MODE`); err != nil {
+		return fmt.Errorf("start exchange export: %w", err)
+	}
+
+	// The first query takes the snapshot, so exportedAt is never later than it.
 	var exportedAt time.Time
 	if err = tx.QueryRow(ctx, `SELECT transaction_timestamp()`).Scan(&exportedAt); err != nil {
 		return fmt.Errorf("start exchange export: %w", err)
@@ -65,11 +91,18 @@ func ExportExchange(ctx context.Context, db Beginner, output io.Writer, options 
 	if err = writer.WriteHeader(exchange.Header{
 		Producer:   model.MaybeValid(options.Producer),
 		ExportedAt: model.MaybeValid(exportedAt),
+		Since:      options.Since,
 	}); err != nil {
 		return err
 	}
 
 	reader := exchangeReader{tx: tx, options: options}
+
+	if options.Since.Valid {
+		if err = reader.declareChanged(ctx); err != nil {
+			return err
+		}
+	}
 
 	for after := []byte{}; ; {
 		records, err := reader.readPage(ctx, after, pageSize)
@@ -97,8 +130,9 @@ func ExportExchange(ctx context.Context, db Beginner, output io.Writer, options 
 	return tx.Commit(ctx)
 }
 
-// exchangeReader reads keyset pages of visible torrents, and everything their records are
-// built from, inside the export's snapshot.
+// exchangeReader reads pages of visible torrents, and everything their records are built
+// from, inside the export's snapshot. A full export reads keyset pages of torrents; an
+// incremental one fetches them from the cursor declareChanged opens.
 type exchangeReader struct {
 	tx      pgx.Tx
 	options ExchangeOptions
@@ -154,12 +188,19 @@ func (r exchangeReader) readPage(ctx context.Context, after []byte, limit int) (
 func (r exchangeReader) readTorrents(
 	ctx context.Context, after []byte, limit int,
 ) (records []exchange.Record, listed [][]byte, err error) {
-	rows, err := r.tx.Query(ctx, `SELECT info_hash, name, size, private, files_status::text FROM torrents
+	var rows pgx.Rows
+	if r.options.Since.Valid {
+		rows, err = r.tx.Query(ctx, fmt.Sprintf(`FETCH FORWARD %d FROM `+changedCursor, limit))
+	} else {
+		rows, err = r.tx.Query(ctx, `SELECT `+torrentColumns+` FROM torrents
  WHERE info_hash > $1 AND `+VisibleInfoHash("torrents.info_hash")+`
  ORDER BY info_hash LIMIT $2`, after, limit)
+	}
+
 	if err != nil {
 		return nil, nil, fmt.Errorf("read torrents: %w", err)
 	}
+
 	defer rows.Close()
 
 	for rows.Next() {
@@ -200,6 +241,74 @@ func (r exchangeReader) readTorrents(
 	}
 
 	return records, listed, nil
+}
+
+// torrentColumns are the torrents columns a record starts from, in readTorrents' order.
+const torrentColumns = `info_hash, name, size, private, files_status::text`
+
+// changedCursor names the cursor an incremental export pages through.
+const changedCursor = `exchange_changed`
+
+// decidedIdentifier is the moderation identifier of the torrent aliased decided, spelled
+// exactly as the expression index of migration 00027 (and moderation.ApplyImport's
+// lookup), so a lookup from a decision to its torrent is indexed. It equals the
+// identifier VisibleInfoHash computes.
+const decidedIdentifier = `encode(sha256(
+ '\x6d61676e65733a6d6f6465726174696f6e3a76313a627469683a'::bytea || decided.info_hash), 'hex')`
+
+// declareChanged opens a cursor over the visible torrents whose exchanged data changed at
+// or after the cursor time, Since less Overlap, in infohash order. A torrent qualifies
+// when any row its record is built from was stamped at or after it:
+//
+//   - torrents.updated_at, which a metainfo write and a filled file list move. File rows
+//     are insert-only and arrive with that write, so they need no clause of their own;
+//   - a source row's updated_at, which a scrape and an import move without touching
+//     the torrents row;
+//   - a classification's updated_at, which reclassification and enhancement move;
+//   - its moderation decision's updated_at, so a torrent allowed out of quarantine is
+//     sent although none of its own rows changed;
+//   - with tags only, a tag's updated_at. Tags are insert-only, so a new tag carries
+//     its own time.
+//
+// A writer, or a migration, that changes one of a record's columns without moving the
+// updated_at listed here makes an incremental export miss that change.
+//
+// The changed infohashes are collected once, deduplicated and joined to torrents, and
+// every page is fetched from the cursor inside the export's snapshot. Keyset pages, as the
+// full export uses, would collect the changes again for every page. The planner is told
+// the whole result will be read, so that it plans for total cost rather than for the
+// first rows: planned for the first rows, it walked the whole primary key in order.
+//
+// Measured on a scratch catalogue of 1M torrents, one day of changes took 740 ms. Two
+// alternatives were rejected. A correlated "updated_at >= $1 OR info_hash IN (...)"
+// stops hashing its subquery once the changes outgrow work_mem, and then rescans it for
+// every torrent. An index on torrents.updated_at saved about 20 ms of the 740, against
+// a sequential scan.
+func (r exchangeReader) declareChanged(ctx context.Context) error {
+	changed := `SELECT info_hash FROM torrents WHERE updated_at >= $1
+ UNION ALL SELECT info_hash FROM torrents_torrent_sources WHERE updated_at >= $1
+ UNION ALL SELECT info_hash FROM torrent_contents WHERE updated_at >= $1
+ UNION ALL SELECT decided.info_hash FROM moderation_decisions AS decision
+ JOIN torrents AS decided ON decision.identifier = ` + decidedIdentifier + `
+ WHERE decision.updated_at >= $1`
+	if r.options.IncludeTags {
+		changed += `
+ UNION ALL SELECT info_hash FROM torrent_tags WHERE updated_at >= $1`
+	}
+
+	if _, err := r.tx.Exec(ctx, `SET LOCAL cursor_tuple_fraction = 1`); err != nil {
+		return fmt.Errorf("find changed torrents: %w", err)
+	}
+
+	if _, err := r.tx.Exec(ctx, `DECLARE `+changedCursor+` NO SCROLL CURSOR FOR
+ SELECT `+torrentColumns+` FROM torrents
+ WHERE torrents.info_hash IN (`+changed+`)
+ AND `+VisibleInfoHash("torrents.info_hash")+`
+ ORDER BY info_hash`, r.options.Since.Val.Add(-r.options.Overlap)); err != nil {
+		return fmt.Errorf("find changed torrents: %w", err)
+	}
+
+	return nil
 }
 
 // applyFilesStatus decides what the record says about its file list, and reports
