@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
+	"fmt"
 	"strings"
 	"time"
 
@@ -160,12 +161,14 @@ func (c *crawler) writeEligibleTorrentBatch(
 	}
 	flushHashesToClassify()
 
+	seen := make(map[protocol.ID]struct{}, len(is))
+
 	for _, i := range is {
-		if _, ok := hashMap[i.infoHash]; ok {
+		if _, ok := seen[i.infoHash]; ok {
 			continue
 		}
 
-		hashMap[i.infoHash] = i
+		seen[i.infoHash] = struct{}{}
 
 		if t, err := createTorrentModel(
 			i.infoHash,
@@ -173,8 +176,12 @@ func (c *crawler) writeEligibleTorrentBatch(
 			c.savePieces,
 			c.saveFilesThreshold,
 		); err != nil {
-			c.logger.Errorf("error creating torrent model: %s", err.Error())
+			// The metainfo came from a peer, so this is not an operator's error; and
+			// the torrent is left out of hashMap, so it is neither counted nor scraped.
+			c.logger.Debugw("skipping torrent", "infoHash", i.infoHash, "error", err)
 		} else {
+			hashMap[i.infoHash] = i
+
 			for _, f := range t.Files {
 				fc := f
 				torrentFilesToPersist = append(torrentFilesToPersist, &fc)
@@ -289,6 +296,11 @@ func createTorrentModel(
 ) (model.Torrent, error) {
 	name := info.BestName()
 
+	// One string too long for its index would fail the whole batch's transaction.
+	if len(name) > model.MaxTorrentNameBytes {
+		return model.Torrent{}, fmt.Errorf("name of %d bytes is too long to index", len(name))
+	}
+
 	private := false
 	if info.Private != nil {
 		private = *info.Private
@@ -333,6 +345,12 @@ func createTorrentModel(
 		if savedCount >= int(saveFilesThreshold) {
 			filesStatus = model.FilesStatusOverThreshold
 			break
+		}
+
+		if len(displayPath) > model.MaxTorrentFilePathBytes {
+			return model.Torrent{}, fmt.Errorf(
+				"file path of %d bytes is too long to index", len(displayPath),
+			)
 		}
 
 		files = append(files, model.TorrentFile{

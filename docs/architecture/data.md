@@ -98,6 +98,11 @@ Metadata source definitions include dependencies used only by visible torrent hi
 unassociated definitions are preserved, while sources used solely by hidden rows are excluded.
 They are distinct from full administrative database backups.
 The exchange-file `export` command reads through the same `VisibleInfoHash` rule.
+Its incremental form finds changed torrents by `updated_at` on `torrents`,
+`torrents_torrent_sources`, `torrent_contents`, `torrent_tags` and `moderation_decisions`,
+so a writer or a migration that changes a column an exchange record is built from must
+move that row's `updated_at`, or incremental exports miss the change. See
+[Incremental export](../exchange-file.md#incremental-export).
 
 ## Migrations
 

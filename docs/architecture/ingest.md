@@ -99,6 +99,15 @@ database, and it does more than its name suggests:
   evidence without catalogue insertion or scrape/classification forwarding. Pending
   records retain an independent copy of all observed paths before the ordinary file cap,
   and keep catalogue metadata hidden for a later local allow. Scraped source-count writes and imports use the same boundary.
+- **A torrent the schema cannot hold is skipped, not the batch.** `createTorrentModel`
+  refuses a name longer than `torrents_name_idx` accepts, or a stored file path longer
+  than `torrent_files_pkey` accepts; the limits are in
+  [`model/index_limits.go`](../../internal/model/index_limits.go), shared with the
+  importer. Peers control both strings, and one over-long value used to fail the whole
+  transaction with SQLSTATE 54000 — losing up to a thousand torrents, on the shutdown
+  drain too. Only paths that become rows are limited: padding, files past the threshold
+  and a single-file torrent's entry are not. The skip is logged at debug, and the hash
+  is neither counted nor forwarded to scrape.
 - Files whose display path starts with `.pad/` are skipped (BEP 47 padding), while
   `FilesCount` is still derived from the full metainfo file list.
 - `SaveFilesThreshold` (default 100) caps stored file rows; exceeding it sets
@@ -139,6 +148,10 @@ the crawler.
   - A file list is taken only `WHERE files_status IN ('no_info', 'over_threshold')`.
   - Peer counts merge inside the upsert.
   - Name, size and private are written only by the insert of a new torrent.
+- **A record the schema cannot hold is skipped before the batch is written,** by `plan`
+  in `exchange_write.go`: a number too large for its column, or a name, file path or
+  source too long for its btree index — the same limits the crawler applies. One such record would otherwise fail the
+  statement, and with it the batch and the import.
 - **The batch's torrents are locked first, in infohash order,** as the crawler's source
   write does. The first statement inserts the new torrents, `ON CONFLICT DO NOTHING`.
   The second takes `FOR KEY SHARE` on all of them, so no foreign key fails later in the

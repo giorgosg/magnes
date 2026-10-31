@@ -69,6 +69,11 @@ type sourcePlan struct {
 func (i *ExchangeImporter) plan(record exchange.Record, options ExchangeOptions, d *drops) (recordPlan, bool) {
 	p := recordPlan{hash: record.InfoHash, name: record.Name, private: record.Private.Val}
 
+	if len(record.Name) > model.MaxTorrentNameBytes {
+		d.add(ReasonOutOfRange, "name", "")
+		return p, false
+	}
+
 	if record.Size.Valid {
 		if record.Size.Val > math.MaxInt64 {
 			d.add(ReasonOutOfRange, "size", "")
@@ -80,6 +85,11 @@ func (i *ExchangeImporter) plan(record exchange.Record, options ExchangeOptions,
 
 	for _, source := range record.Sources.Val {
 		s := sourcePlan{name: exchange.PrefixSourceName(options.Origin, source.Name)}
+
+		if len(s.name) > model.MaxTorrentSourceNameBytes {
+			d.add(ReasonOutOfRange, "sources[].source", "")
+			return p, false
+		}
 
 		var ok bool
 		if s.seeders, ok = peerCount(source.Seeders); !ok {
@@ -270,6 +280,14 @@ func (i *ExchangeImporter) planFiles(p *recordPlan, record exchange.Record) (str
 		p.filesStatus = model.FilesStatusMulti
 		p.filesCount = ptrInt32(len(files))
 		p.files = files
+	}
+
+	// Only the rows that will be stored are checked: padding entries and files past the
+	// threshold are not written, so their paths cannot fail a write.
+	for _, f := range p.files {
+		if len(f.Path) > model.MaxTorrentFilePathBytes {
+			return "files[].path", false
+		}
 	}
 
 	return "", true

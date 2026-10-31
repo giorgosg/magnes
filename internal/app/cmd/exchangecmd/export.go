@@ -2,10 +2,12 @@ package exchangecmd
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/bitmagnet-io/bitmagnet/internal/database/catalogue"
 	"github.com/bitmagnet-io/bitmagnet/internal/exchange"
@@ -27,7 +29,10 @@ type ExportParams struct {
 	Pool lazy.Lazy[*pgxpool.Pool]
 }
 
-// NewExport builds `export [--include-tags] <file|->`.
+// exportUsage is the export command's synopsis.
+const exportUsage = "export [--include-tags] [--since <time> [--overlap <duration>]] " + fileArgs
+
+// NewExport builds `export [--include-tags] [--since <time> [--overlap <duration>]] <file|->`.
 func NewExport(p ExportParams) Result {
 	return Result{Command: &cli.Command{
 		Name:  "export",
@@ -35,12 +40,25 @@ func NewExport(p ExportParams) Result {
 		Description: "Writes every visible torrent as an exchange file, to a file or to standard output " +
 			"for -. Pending and banned torrents are never written. A file is replaced only once the " +
 			"export has succeeded. Tags are written only with --include-tags. For a same-version backup, " +
-			"use the catalogue export (task export-data) instead.",
+			"use the catalogue export (task export-data) instead.\n\n" +
+			"With --since, the export is incremental: it writes only torrents whose exchanged data changed " +
+			"at or after that RFC 3339 time, such as a previous export's exportedAt. It re-reads --overlap " +
+			"before it, because a change is timestamped before it commits. Removed torrents, removed tags " +
+			"and new bans are never conveyed; a receiver that mirrors deletions needs a full export.",
 		ArgsUsage: fileArgs,
 		Flags: []cli.Flag{
 			&cli.BoolFlag{
 				Name:  "include-tags",
 				Usage: "write each torrent's local tags as magnes.tags",
+			},
+			&cli.StringFlag{
+				Name:  "since",
+				Usage: "write only torrents changed at or after this RFC 3339 time",
+			},
+			&cli.StringFlag{
+				Name:  "overlap",
+				Value: catalogue.DefaultExchangeOverlap.String(),
+				Usage: "with --since, also re-read changes timestamped this long before it",
 			},
 		},
 		Action: p.export,
@@ -49,7 +67,12 @@ func NewExport(p ExportParams) Result {
 
 func (p ExportParams) export(ctx *cli.Context) error {
 	if ctx.NArg() != 1 {
-		return cli.Exit("usage: export [--include-tags] <file|->", exitUsage)
+		return cli.Exit("usage: "+exportUsage, exitUsage)
+	}
+
+	since, overlap, err := parseIncremental(ctx)
+	if err != nil {
+		return cli.Exit("export: "+err.Error(), exitUsage)
 	}
 
 	pool, err := p.Pool.Get()
@@ -60,6 +83,8 @@ func (p ExportParams) export(ctx *cli.Context) error {
 	options := catalogue.ExchangeOptions{
 		Producer:    producer(),
 		IncludeTags: ctx.Bool("include-tags"),
+		Since:       since,
+		Overlap:     overlap,
 	}
 
 	exportTo := func(w io.Writer) error {
@@ -77,6 +102,34 @@ func (p ExportParams) export(ctx *cli.Context) error {
 	}
 
 	return nil
+}
+
+// parseIncremental reads --since and --overlap. --since must carry its offset, as exportedAt
+// does, so the cursor never depends on the local time zone.
+func parseIncremental(ctx *cli.Context) (model.Maybe[time.Time], time.Duration, error) {
+	if !ctx.IsSet("since") {
+		if ctx.IsSet("overlap") {
+			return model.Maybe[time.Time]{}, 0, errors.New("--overlap needs --since")
+		}
+
+		return model.Maybe[time.Time]{}, 0, nil
+	}
+
+	since, err := time.Parse(time.RFC3339Nano, ctx.String("since"))
+	if err != nil {
+		return model.Maybe[time.Time]{}, 0, fmt.Errorf("--since is not an RFC 3339 time: %w", err)
+	}
+
+	overlap, err := time.ParseDuration(ctx.String("overlap"))
+	if err != nil {
+		return model.Maybe[time.Time]{}, 0, fmt.Errorf("--overlap: %w", err)
+	}
+
+	if overlap < 0 {
+		return model.Maybe[time.Time]{}, 0, errors.New("--overlap cannot be negative")
+	}
+
+	return model.MaybeValid(since.UTC()), overlap, nil
 }
 
 func producer() exchange.Producer {
